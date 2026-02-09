@@ -72,6 +72,10 @@ class VeSMedEngine:
         self.disease_2c = {}  # disease_name → {"critical": float, "curable": float, "weight": float}
         self._compute_2c_scores()
 
+        # 検査コスト（embedding推定）
+        self.test_embed_cost = {}  # test_name → float (exp(cos_invasive))
+        self._compute_test_embed_costs()
+
     # ----------------------------------------------------------------
     # 2Cスコア計算（起動時に1回）
     # ----------------------------------------------------------------
@@ -133,6 +137,80 @@ class VeSMedEngine:
             self.disease_2c[dname] = {**scores, "weight": weight}
 
         print(f"[2C] {len(self.disease_2c)}疾患の2Cスコア計算完了")
+
+    # ----------------------------------------------------------------
+    # 検査コスト推定（embedding、キャッシュ付き）
+    # ----------------------------------------------------------------
+    def _compute_test_embed_costs(self):
+        """
+        検査名をembedしてコストアンカーとの余弦類似度から侵襲度/コストを推定。
+        cost = exp(cos_sim(test_name, anchor))
+        結果はJSONファイルにキャッシュし、次回起動時はロードのみ。
+        """
+        cache_file = os.path.join(DATA_DIR, "test_embed_cost.json")
+
+        # 全検査名を収集（名寄せ後）
+        all_test_names = set()
+        for d in self.disease_db.values():
+            for t in d.get("relevant_tests", []):
+                tname = self.test_name_map.get(t["test_name"], t["test_name"])
+                all_test_names.add(tname)
+
+        # キャッシュが存在し、全検査名をカバーしていればロード
+        if os.path.exists(cache_file):
+            with open(cache_file, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            missing = all_test_names - set(cached.keys())
+            if not missing:
+                self.test_embed_cost = {k: float(v) for k, v in cached.items()}
+                print(f"[コスト] キャッシュから{len(self.test_embed_cost)}検査のコスト読込")
+                return
+            print(f"[コスト] キャッシュに{len(missing)}件の未計算検査あり、再計算")
+        else:
+            cached = {}
+
+        # アンカーテキスト
+        anchor_text = "大規模な設備・専門スタッフ・入院を要し、患者への身体的負担と合併症リスクが大きい高額で侵襲的な検査手技"
+
+        # アンカー + 全検査名をembedding
+        test_list = sorted(all_test_names)
+        all_texts = [anchor_text] + test_list
+        all_embs = []
+
+        batch_size = 20
+        for start in range(0, len(all_texts), batch_size):
+            batch = all_texts[start:start + batch_size]
+            try:
+                resp = self.embed_client.embeddings.create(
+                    model=EMBEDDING_MODEL,
+                    input=batch,
+                )
+                for item in resp.data:
+                    all_embs.append(np.array(item.embedding))
+            except Exception as e:
+                print(f"[コスト] embedding失敗 (batch {start}): {e}")
+                return
+            if start % 100 == 0 and start > 0:
+                print(f"[コスト] embedding {start}/{len(all_texts)}...")
+
+        anchor_emb = all_embs[0]
+        test_embs = all_embs[1:]
+
+        def cosine_sim(a, b):
+            na, nb = np.linalg.norm(a), np.linalg.norm(b)
+            if na == 0 or nb == 0:
+                return 0.0
+            return float(np.dot(a, b) / (na * nb))
+
+        for i, tname in enumerate(test_list):
+            sim = cosine_sim(test_embs[i], anchor_emb)
+            self.test_embed_cost[tname] = math.exp(sim)
+
+        # キャッシュに保存
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(self.test_embed_cost, f, ensure_ascii=False, indent=1)
+
+        print(f"[コスト] {len(self.test_embed_cost)}検査のembeddingコスト計算完了")
 
     # ----------------------------------------------------------------
     # LLM呼び出し（リトライ + フォールバック）
@@ -481,20 +559,20 @@ class VeSMedEngine:
         for tname, tdata in test_disease_map.items():
             score = self._expected_info_gain(candidates, tdata, clinical_weights)
 
-            cost = max(tdata["cost_level"], 1)
-            utility = score / cost
+            # コスト = exp(cos_sim(検査名, 侵襲アンカー))
+            embed_cost = self.test_embed_cost.get(tname, math.exp(0.5))
+            utility = score / embed_cost
 
             ranked.append({
                 "test_name": tname,
                 "info_gain": round(score, 4),
-                "cost_level": tdata["cost_level"],
-                "invasiveness": tdata["invasiveness"],
+                "embed_cost": round(embed_cost, 2),
                 "turnaround_minutes": tdata["turnaround_minutes"],
                 "utility": round(utility, 4),
                 "details": tdata["diseases"],
             })
 
-        ranked.sort(key=lambda x: x["info_gain"], reverse=True)
+        ranked.sort(key=lambda x: x["utility"], reverse=True)
         return ranked
 
     def _expected_info_gain(self, candidates, test_data, clinical_weights) -> float:

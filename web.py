@@ -182,9 +182,9 @@ def format_tests_df(ranked_tests):
         rows.append({
             "#": i + 1,
             "検査名": t["test_name"],
-            "情報利得": f"{t['info_gain']:.4f}",
-            "コスト": t["cost_level"],
             "効用": f"{t['utility']:.4f}",
+            "情報利得": f"{t['info_gain']:.4f}",
+            "コスト": f"{t['embed_cost']:.2f}",
             "関連疾患": related,
         })
     return pd.DataFrame(rows)
@@ -242,8 +242,8 @@ with gr.Blocks(
             )
         with gr.Column(scale=1):
             test_table = gr.Dataframe(
-                label="推薦検査（重み付き情報利得 降順）",
-                headers=["#", "検査名", "情報利得", "コスト", "効用", "関連疾患"],
+                label="推薦検査（効用 = 情報利得 / コスト 降順）",
+                headers=["#", "検査名", "効用", "情報利得", "コスト", "関連疾患"],
                 interactive=False,
             )
 
