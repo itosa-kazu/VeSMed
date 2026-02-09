@@ -8,6 +8,7 @@ VeSMed - Web UI (Gradio)
   3. 繰り返し
 """
 
+from concurrent.futures import ThreadPoolExecutor
 import gradio as gr
 import pandas as pd
 from engine import VeSMedEngine
@@ -39,12 +40,17 @@ def analyze_patient(patient_text, state):
 
     eng = init_engine()
 
-    rewritten = eng.rewrite_query(patient_text)
+    # rewrite_query と extract_done_tests は独立 → 並行実行で ~40秒短縮
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        future_rewrite = ex.submit(eng.rewrite_query, patient_text)
+        future_done = ex.submit(eng.extract_done_tests, patient_text)
+        rewritten = future_rewrite.result()
+        raw_done = future_done.result()
+
     candidates = eng.search_diseases(rewritten, original_text=patient_text)
     candidates = eng.compute_priors(candidates)
 
-    # 患者テキストから既実施検査を抽出 → 名寄せ → 除外
-    raw_done = eng.extract_done_tests(patient_text)
+    # 名寄せ（candidates依存のため並行化できない）
     done_tests = eng.normalize_done_tests(raw_done, candidates)
 
     ranked_tests = eng.rank_tests(candidates, done_tests=done_tests)

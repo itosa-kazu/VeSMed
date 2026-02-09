@@ -172,26 +172,34 @@ class VeSMedEngine:
         # アンカーテキスト
         anchor_text = "大規模な設備・専門スタッフ・入院を要し、患者への身体的負担と合併症リスクが大きい高額で侵襲的な検査手技"
 
-        # アンカー + 全検査名をembedding
+        # アンカー + 全検査名をembedding（リトライ付き）
         test_list = sorted(all_test_names)
         all_texts = [anchor_text] + test_list
         all_embs = []
 
-        batch_size = 20
-        for start in range(0, len(all_texts), batch_size):
+        batch_size = 50  # 検査名は短いので大きめバッチ
+        total_batches = (len(all_texts) + batch_size - 1) // batch_size
+        for batch_idx, start in enumerate(range(0, len(all_texts), batch_size)):
             batch = all_texts[start:start + batch_size]
-            try:
-                resp = self.embed_client.embeddings.create(
-                    model=EMBEDDING_MODEL,
-                    input=batch,
-                )
-                for item in resp.data:
-                    all_embs.append(np.array(item.embedding))
-            except Exception as e:
-                print(f"[コスト] embedding失敗 (batch {start}): {e}")
+            success = False
+            for attempt in range(3):
+                try:
+                    resp = self.embed_client.embeddings.create(
+                        model=EMBEDDING_MODEL,
+                        input=batch,
+                    )
+                    for item in resp.data:
+                        all_embs.append(np.array(item.embedding))
+                    success = True
+                    break
+                except Exception as e:
+                    print(f"[コスト] batch {batch_idx+1}/{total_batches} 失敗 (試行{attempt+1}): {e}")
+                    time.sleep(2 ** attempt)
+            if not success:
+                print(f"[コスト] batch {batch_idx+1} が3回失敗、中断")
                 return
-            if start % 100 == 0 and start > 0:
-                print(f"[コスト] embedding {start}/{len(all_texts)}...")
+            if (batch_idx + 1) % 5 == 0 or batch_idx == total_batches - 1:
+                print(f"[コスト] embedding {batch_idx+1}/{total_batches} バッチ完了")
 
         anchor_emb = all_embs[0]
         test_embs = all_embs[1:]
