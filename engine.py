@@ -6,11 +6,14 @@ VeSMed - 核心エンジン
 import json
 import math
 import os
+import time
 import numpy as np
 import chromadb
 from openai import OpenAI
 from config import (
     LLM_API_KEY, LLM_BASE_URL, LLM_MODEL,
+    LLM_FALLBACK_API_KEY, LLM_FALLBACK_BASE_URL, LLM_FALLBACK_MODEL,
+    LLM_MAX_RETRIES,
     EMBEDDING_API_KEY, EMBEDDING_BASE_URL, EMBEDDING_MODEL,
     TAU, TOP_K_DISEASES, TOP_K_TESTS,
     DISEASES_JSONL, FINDINGS_JSONL, CHROMA_DIR, DATA_DIR,
@@ -18,8 +21,12 @@ from config import (
 
 
 class VeSMedEngine:
+    # 緊急度 → 数値マッピング
+    URGENCY_SCORE = {"超緊急": 3, "緊急": 2, "準緊急": 1, "通常": 0}
+
     def __init__(self):
         self.llm_client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
+        self.llm_fallback_client = OpenAI(api_key=LLM_FALLBACK_API_KEY, base_url=LLM_FALLBACK_BASE_URL)
         self.embed_client = OpenAI(api_key=EMBEDDING_API_KEY, base_url=EMBEDDING_BASE_URL)
 
         # ChromaDB接続
@@ -65,12 +72,44 @@ class VeSMedEngine:
                         continue
 
     # ----------------------------------------------------------------
+    # LLM呼び出し（リトライ + フォールバック）
+    # ----------------------------------------------------------------
+    def _llm_call(self, messages, temperature=0.1, max_tokens=65536):
+        """プライマリAPIでリトライし、失敗したらフォールバックAPIに切り替え"""
+        # プライマリAPI
+        for attempt in range(LLM_MAX_RETRIES + 1):
+            try:
+                resp = self.llm_client.chat.completions.create(
+                    model=LLM_MODEL,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                return resp.choices[0].message.content.strip()
+            except Exception as e:
+                print(f"[LLM] プライマリAPI失敗 (試行{attempt+1}/{LLM_MAX_RETRIES+1}): {e}")
+                if attempt < LLM_MAX_RETRIES:
+                    time.sleep(2 ** attempt)
+
+        # フォールバックAPI
+        print("[LLM] フォールバックAPIに切り替え")
+        try:
+            resp = self.llm_fallback_client.chat.completions.create(
+                model=LLM_FALLBACK_MODEL,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception as e:
+            raise RuntimeError(f"全APIが失敗しました: {e}")
+
+    # ----------------------------------------------------------------
     # Step 1: クエリ整理（患者情報 → 標準化医学テキスト）
     # ----------------------------------------------------------------
     def rewrite_query(self, patient_text: str) -> str:
         """患者情報をLLMで標準的な医学用語に整理する"""
-        response = self.llm_client.chat.completions.create(
-            model=LLM_MODEL,
+        return self._llm_call(
             messages=[
                 {"role": "system", "content": (
                     "あなたは経験豊富な日本の臨床医です。\n"
@@ -84,10 +123,7 @@ class VeSMedEngine:
                 )},
                 {"role": "user", "content": patient_text},
             ],
-            temperature=0.1,
-            max_tokens=800,
         )
-        return response.choices[0].message.content.strip()
 
     # ----------------------------------------------------------------
     # Step 1.5: 患者テキストから既実施検査・所見を抽出
@@ -97,8 +133,7 @@ class VeSMedEngine:
         患者テキストから既に実施済みの検査とその所見を抽出する。
         返り値: [{"test_name": str, "finding": str}, ...]
         """
-        response = self.llm_client.chat.completions.create(
-            model=LLM_MODEL,
+        content = self._llm_call(
             messages=[
                 {"role": "system", "content": (
                     "あなたは経験豊富な日本の臨床医です。\n"
@@ -107,20 +142,19 @@ class VeSMedEngine:
                     "- テキストに明示的に記載されている検査のみ抽出すること\n"
                     "- 推測で検査を追加しないこと\n"
                     "- 身体診察の所見（聴診、触診など）も含めること\n"
-                    "- 出力はJSONのみ。説明文やマークダウンは不要。最初の文字は [ にすること。"
+                    "- バイタルサイン（体温、血圧、心拍数、呼吸数、SpO2）は1つにまとめること\n"
+                    "- 出力はJSONのみ。説明文やマークダウンは不要。最初の文字は [ にすること。\n"
+                    "- 簡潔に。各項目のfindingは20字以内。"
                 )},
                 {"role": "user", "content": (
                     f"以下の患者情報から既実施の検査と所見を抽出してください。\n\n"
                     f"{patient_text}\n\n"
-                    f'出力形式: [{{"test_name": "検査名", "finding": "所見の要約"}}, ...]'
+                    f'出力形式: [{{"test_name": "検査名", "finding": "所見"}}, ...]'
                 )},
             ],
-            temperature=0.1,
-            max_tokens=2000,
         )
 
         import re
-        content = response.choices[0].message.content.strip()
         match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", content, re.DOTALL)
         if match:
             content = match.group(1).strip()
@@ -129,6 +163,16 @@ class VeSMedEngine:
             content = content[start:]
         content = re.sub(r",\s*([}\]])", r"\1", content)
 
+        # 途中で切れたJSONの修復: 未閉じの括弧を補完
+        open_braces = content.count("{") - content.count("}")
+        open_brackets = content.count("[") - content.count("]")
+        if open_braces > 0 or open_brackets > 0:
+            # 最後の不完全なオブジェクトを除去
+            last_complete = content.rfind("}")
+            if last_complete > 0:
+                content = content[:last_complete + 1]
+            content += "]" * max(0, open_brackets)
+
         try:
             results = json.loads(content)
             if isinstance(results, list):
@@ -136,6 +180,79 @@ class VeSMedEngine:
         except json.JSONDecodeError:
             pass
         return []
+
+    # ----------------------------------------------------------------
+    # Step 1.6: 既実施検査の名寄せ（LLMで照合）
+    # ----------------------------------------------------------------
+    def normalize_done_tests(self, done_tests: list, candidates: list) -> list:
+        """
+        extract_done_testsの出力を、候補疾患のrelevant_testsの検査名に名寄せする。
+        done_tests: [{"test_name": "血液検査(WBC)", "finding": "16000"}, ...]
+        candidates: compute_priors済みの候補疾患リスト
+        返り値: 名寄せ済みの検査名リスト ["白血球数", "CRP", ...]
+        """
+        if not done_tests or not candidates:
+            return []
+
+        # 候補疾患のrelevant_testsから検査名を収集
+        db_test_names = set()
+        for c in candidates:
+            d = self.disease_db.get(c["disease_name"])
+            if not d:
+                continue
+            for t in d.get("relevant_tests", []):
+                db_test_names.add(t["test_name"])
+
+        if not db_test_names:
+            return [d["test_name"] for d in done_tests]
+
+        done_str = "\n".join(f"- {d['test_name']}: {d.get('finding', '')}" for d in done_tests)
+        db_str = "\n".join(f"- {n}" for n in sorted(db_test_names))
+
+        content = self._llm_call(
+            messages=[
+                {"role": "system", "content": (
+                    "あなたは臨床検査の専門家です。\n"
+                    "【タスク】患者から抽出された既実施検査を、データベースの検査名に照合してください。\n"
+                    "ルール：\n"
+                    "- 既実施検査の各項目について、データベース検査名リストの中で同一または包含関係にあるものを全て列挙\n"
+                    "- 例: 「血液検査(WBC)」→「白血球数」「白血球分画」\n"
+                    "- 例: 「身体診察(頭頸部)」→「咽頭所見」「項部硬直」「結膜所見」\n"
+                    "- 例: 「バイタルサイン」→「発熱（37.5℃以上）」「血圧測定」\n"
+                    "- 該当なしの場合はスキップ\n"
+                    "- 出力はJSON配列のみ。説明不要。最初の文字は [ にすること。"
+                )},
+                {"role": "user", "content": (
+                    f"【既実施検査】\n{done_str}\n\n"
+                    f"【データベース検査名リスト】\n{db_str}\n\n"
+                    f'出力形式: ["検査名1", "検査名2", ...]'
+                )},
+            ],
+        )
+
+        import re
+        match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", content, re.DOTALL)
+        if match:
+            content = match.group(1).strip()
+        start = content.find("[")
+        if start > 0:
+            content = content[start:]
+        content = re.sub(r",\s*\]", "]", content)
+
+        # 途中で切れたJSONの修復
+        if content.count("[") > content.count("]"):
+            last_quote = content.rfind('"')
+            if last_quote > 0:
+                content = content[:last_quote + 1] + "]"
+
+        try:
+            results = json.loads(content)
+            if isinstance(results, list):
+                # DB検査名に存在するもののみ返す
+                return [r for r in results if r in db_test_names]
+        except json.JSONDecodeError:
+            pass
+        return [d["test_name"] for d in done_tests]
 
     # ----------------------------------------------------------------
     # Step 2: ベクトル検索 → 候補疾患
@@ -288,16 +405,26 @@ class VeSMedEngine:
                     "condition_notes": t.get("condition_notes", ""),
                 })
 
-        # 各検査の期待情報利得を計算
+        # 各検査の重み付き情報利得を計算
+        # 重み付きエントロピー H_w(D) = -Σ w_i × p_i × log(p_i) を使用
+        # w_i = 疾患iの緊急度スコア（超緊急=4, 緊急=3, 準緊急=2, 通常=1）
+        # → 緊急疾患の不確実性を減らす検査が自然に高スコアになる
+        urgency_weights = []
+        for c in candidates:
+            u_str = c.get("urgency", "通常")
+            urgency_weights.append(self.URGENCY_SCORE.get(u_str, 0) + 1)  # 通常=1, 準緊急=2, 緊急=3, 超緊急=4
+        urgency_weights = np.array(urgency_weights, dtype=float)
+
         ranked = []
         for tname, tdata in test_disease_map.items():
-            info_gain = self._expected_info_gain(candidates, tdata)
+            score = self._expected_info_gain(candidates, tdata, urgency_weights)
+
             cost = max(tdata["cost_level"], 1)
-            utility = info_gain / cost
+            utility = score / cost
 
             ranked.append({
                 "test_name": tname,
-                "info_gain": round(info_gain, 4),
+                "info_gain": round(score, 4),
                 "cost_level": tdata["cost_level"],
                 "invasiveness": tdata["invasiveness"],
                 "turnaround_minutes": tdata["turnaround_minutes"],
@@ -308,17 +435,14 @@ class VeSMedEngine:
         ranked.sort(key=lambda x: x["info_gain"], reverse=True)
         return ranked
 
-    def _expected_info_gain(self, candidates, test_data) -> float:
+    def _expected_info_gain(self, candidates, test_data, urgency_weights) -> float:
         """
-        1つの検査の期待情報利得 I(D;T) を計算する。
+        1つの検査の重み付き期待情報利得を計算する。
 
-        計算方法：
-        - 現在の先験分布のエントロピー H(D)
-        - 検査陽性/陰性の場合それぞれの事後分布のエントロピー H(D|T=+), H(D|T=-)
-        - 期待情報利得 = H(D) - [P(T=+)H(D|T=+) + P(T=-)H(D|T=-)]
+        重み付きエントロピー H_w(D) = -Σ w_i × p_i × log(p_i) を使用。
+        w_i は疾患iの緊急度スコア（超緊急=4, 緊急=3, 準緊急=2, 通常=1）。
+        緊急疾患の不確実性を減らす検査ほど高スコアになる。
         """
-        # 検査がカバーしない疾患は「検査の影響なし」として扱う
-        # Se/Spは保守的に下界を使用
         disease_test_info = {}
         for d in test_data["diseases"]:
             disease_test_info[d["disease_name"]] = {
@@ -337,7 +461,6 @@ class VeSMedEngine:
                 se_list.append(disease_test_info[c["disease_name"]]["se"])
                 sp_list.append(disease_test_info[c["disease_name"]]["sp"])
             else:
-                # この検査がこの疾患に関係ない → 検査結果はランダム（Se=Sp=0.5相当）
                 se_list.append(0.5)
                 sp_list.append(0.5)
 
@@ -345,27 +468,9 @@ class VeSMedEngine:
         se_arr = np.array(se_list)
         sp_arr = np.array(sp_list)
 
-        # 現在のエントロピー
-        h_prior = self._entropy(priors)
+        # 現在の重み付きエントロピー
+        h_prior = self._weighted_entropy(priors, urgency_weights)
 
-        # P(T=+) = Σ_i [P(D_i) * Se_i + P(not D_i) * (1-Sp_i)] ... 近似
-        # 簡略化: 各疾患について独立に計算
-        # P(T=+ | D_i) = Se_i,  P(T=+ | not D_i) = 1-Sp_i
-        p_test_pos = np.sum(priors * se_arr) + np.sum(priors * (1 - sp_arr)) - np.sum(priors * (1 - sp_arr))
-        # 正確には: P(T+) = Σ_i P(D_i)*Se_i + (1 - Σ_i P(D_i)) * (1-Sp_avg)
-        # ここでは多疾患モデルの近似として:
-        p_pos_given_each = se_arr  # P(T+|D_i)
-        p_neg_given_each = 1 - se_arr  # P(T-|D_i)
-
-        # 「どの疾患でもない」確率を考慮する余地はあるが、
-        # Top-kの中での相対比較なので省略
-
-        # P(T+) ≈ Σ P(D_i) * P(T+|D_i)  (各疾患を排他的と仮定した近似)
-        # ただし「疾患でない場合の偽陽性」も考慮
-        # 簡易計算: 各疾患iが真の場合のT+確率を加重平均
-        p_t_pos = float(np.sum(priors * se_arr + (1 - priors) * (1 - sp_arr)))
-        # 上記は過大評価する可能性があるので正規化
-        # より正確なアプローチ: 二値の場合の公式を多疾患に拡張
         # P(T+) = Σ_i π_i * Se_i + (1-Σ_i π_i) * FPR_avg
         total_prior = np.sum(priors)
         avg_fpr = float(np.mean(1 - sp_arr))
@@ -383,19 +488,19 @@ class VeSMedEngine:
         if posteriors_neg.sum() > 0:
             posteriors_neg = posteriors_neg / posteriors_neg.sum()
 
-        h_pos = self._entropy(posteriors_pos)
-        h_neg = self._entropy(posteriors_neg)
+        h_pos = self._weighted_entropy(posteriors_pos, urgency_weights)
+        h_neg = self._weighted_entropy(posteriors_neg, urgency_weights)
 
         info_gain = h_prior - (p_t_pos * h_pos + p_t_neg * h_neg)
         return max(0.0, info_gain)
 
     @staticmethod
-    def _entropy(probs):
-        """確率分布のエントロピー (bits)"""
-        probs = probs[probs > 0]
-        if len(probs) == 0:
+    def _weighted_entropy(probs, weights):
+        """重み付きエントロピー H_w = -Σ w_i × p_i × log2(p_i)"""
+        mask = probs > 0
+        if not np.any(mask):
             return 0.0
-        return float(-np.sum(probs * np.log2(probs)))
+        return float(-np.sum(weights[mask] * probs[mask] * np.log2(probs[mask])))
 
     # ----------------------------------------------------------------
     # Step 5: LLMで所見を解釈 → 疾患ごとにベイズ更新
@@ -477,19 +582,15 @@ class VeSMedEngine:
                 f'{{"疾患名": {{"判定": "陽性" or "陰性", "se": 0.0~1.0, "sp": 0.0~1.0, "理由": "簡潔な理由"}}, ...}}'
             )
 
-        response = self.llm_client.chat.completions.create(
-            model=LLM_MODEL,
+        content = self._llm_call(
             messages=[
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": user_msg},
             ],
-            temperature=0.1,
-            max_tokens=4000,
         )
 
         # LLM出力をパース
         import re
-        content = response.choices[0].message.content.strip()
         match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", content, re.DOTALL)
         if match:
             content = match.group(1).strip()

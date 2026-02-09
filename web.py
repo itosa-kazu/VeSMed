@@ -42,18 +42,23 @@ def analyze_patient(patient_text, state):
     rewritten = eng.rewrite_query(patient_text)
     candidates = eng.search_diseases(rewritten, original_text=patient_text)
     candidates = eng.compute_priors(candidates)
-    ranked_tests = eng.rank_tests(candidates)
-    available_tests = eng.find_matching_tests(candidates)
+
+    # 患者テキストから既実施検査を抽出 → 名寄せ → 除外
+    raw_done = eng.extract_done_tests(patient_text)
+    done_tests = eng.normalize_done_tests(raw_done, candidates)
+
+    ranked_tests = eng.rank_tests(candidates, done_tests=done_tests)
+    available_tests = eng.find_matching_tests(candidates, done_tests=done_tests)
 
     new_state = {
         "patient_text": patient_text,
         "candidates": candidates,
         "ranked_tests": ranked_tests,
-        "done_tests": [],
+        "done_tests": done_tests,
         "history": [],
     }
 
-    status = f"初回分析完了 / 候補{len(candidates)}疾患 / 推薦検査{len(ranked_tests)}件"
+    status = f"初回分析完了 / 候補{len(candidates)}疾患 / 推薦検査{len(ranked_tests)}件 / 既実施{len(done_tests)}件除外"
 
     return (
         status,
@@ -179,7 +184,6 @@ def format_tests_df(ranked_tests):
             "情報利得": f"{t['info_gain']:.4f}",
             "コスト": t["cost_level"],
             "効用": f"{t['utility']:.4f}",
-            "侵襲度": t["invasiveness"],
             "関連疾患": related,
         })
     return pd.DataFrame(rows)
@@ -237,8 +241,8 @@ with gr.Blocks(
             )
         with gr.Column(scale=1):
             test_table = gr.Dataframe(
-                label="推薦検査（情報利得 降順）",
-                headers=["#", "検査名", "情報利得", "コスト", "効用", "侵襲度", "関連疾患"],
+                label="推薦検査（重み付き情報利得 降順）",
+                headers=["#", "検査名", "情報利得", "コスト", "効用", "関連疾患"],
                 interactive=False,
             )
 

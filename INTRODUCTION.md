@@ -33,7 +33,7 @@ VeSMed（Vector Space Medicine）は、**ベクトル空間（embedding）を用
 | 重み付きスコアリング | DXplain, Isabel | 確率的推論なし |
 | ナイーブベイズ + 手動Se/Sp | QMR-DT, Iliad | 手動キュレーション必要 |
 | LLM直接推定 | ChatGPT, AMIE | 非決定的、校正不良 |
-| **ベクトル検索 + 情報利得** | **VeSMed** | **LLM蒸馏メタデータ + 再検索ループ** |
+| **ベクトル検索 + 情報利得** | **VeSMed** | **LLM蒸留メタデータ + 再検索ループ** |
 
 ## システム構成
 
