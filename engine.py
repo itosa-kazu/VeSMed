@@ -21,9 +21,6 @@ from config import (
 
 
 class VeSMedEngine:
-    # 緊急度 → 数値マッピング
-    URGENCY_SCORE = {"超緊急": 3, "緊急": 2, "準緊急": 1, "通常": 0}
-
     def __init__(self):
         self.llm_client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
         self.llm_fallback_client = OpenAI(api_key=LLM_FALLBACK_API_KEY, base_url=LLM_FALLBACK_BASE_URL)
@@ -70,6 +67,72 @@ class VeSMedEngine:
                                 existing.append(item)
                     except (json.JSONDecodeError, KeyError):
                         continue
+
+        # 2Cスコア（Critical / Curable）をembeddingで計算
+        self.disease_2c = {}  # disease_name → {"critical": float, "curable": float, "weight": float}
+        self._compute_2c_scores()
+
+    # ----------------------------------------------------------------
+    # 2Cスコア計算（起動時に1回）
+    # ----------------------------------------------------------------
+    def _compute_2c_scores(self):
+        """
+        Critical / Curable の2アンカーテキストと各疾患のembeddingの
+        余弦類似度から臨床重要度スコアを算出する。
+
+        重み = exp(cos_critical + cos_curable)
+        - Critical: 見逃しコスト（事前確率に含まれない独自情報）
+        - Curable:  診断利益（治療可能性、事前確率に含まれない独自情報）
+        - Common は事前確率（ベクトル検索類似度）と重複するため廃止
+        - exp() により常に正値、フロア不要、softmaxと数学的に統一
+        """
+        anchors = {
+            "critical": "見逃すと数時間以内に死亡する、または不可逆的な臓器障害を来す致命的疾患。緊急手術や集中治療を要する。",
+            "curable": "早期に適切な治療（抗菌薬、手術、特異的治療）を行えば完治または大幅な改善が期待できる治療可能な疾患。",
+        }
+
+        # アンカーをembedding
+        anchor_texts = list(anchors.values())
+        try:
+            resp = self.embed_client.embeddings.create(
+                model=EMBEDDING_MODEL,
+                input=anchor_texts,
+            )
+            anchor_embs = {
+                name: np.array(resp.data[i].embedding)
+                for i, name in enumerate(anchors.keys())
+            }
+        except Exception as e:
+            print(f"[2C] アンカーembedding失敗: {e}")
+            return
+
+        # ChromaDBから全疾患のembeddingを取得
+        all_ids = [f"disease_{i}" for i in range(self.collection.count())]
+        batch_size = 100
+        all_embeddings = {}
+        for start in range(0, len(all_ids), batch_size):
+            batch_ids = all_ids[start:start + batch_size]
+            result = self.collection.get(ids=batch_ids, include=["embeddings", "metadatas"])
+            for j, mid in enumerate(result["ids"]):
+                dname = result["metadatas"][j].get("disease_name", "")
+                all_embeddings[dname] = np.array(result["embeddings"][j])
+
+        # 余弦類似度 → exp重みを計算
+        def cosine_sim(a, b):
+            norm_a = np.linalg.norm(a)
+            norm_b = np.linalg.norm(b)
+            if norm_a == 0 or norm_b == 0:
+                return 0.0
+            return float(np.dot(a, b) / (norm_a * norm_b))
+
+        for dname, emb in all_embeddings.items():
+            scores = {}
+            for anchor_name, anchor_emb in anchor_embs.items():
+                scores[anchor_name] = cosine_sim(emb, anchor_emb)
+            weight = math.exp(scores["critical"] + scores["curable"])
+            self.disease_2c[dname] = {**scores, "weight": weight}
+
+        print(f"[2C] {len(self.disease_2c)}疾患の2Cスコア計算完了")
 
     # ----------------------------------------------------------------
     # LLM呼び出し（リトライ + フォールバック）
@@ -348,6 +411,7 @@ class VeSMedEngine:
 
         for i, c in enumerate(candidates):
             c["prior"] = float(priors[i])
+            c["clinical_weight"] = self.disease_2c.get(c["disease_name"], {}).get("weight", 1.0)
 
         return candidates
 
@@ -406,18 +470,16 @@ class VeSMedEngine:
                 })
 
         # 各検査の重み付き情報利得を計算
-        # 重み付きエントロピー H_w(D) = -Σ w_i × p_i × log(p_i) を使用
-        # w_i = 疾患iの緊急度スコア（超緊急=4, 緊急=3, 準緊急=2, 通常=1）
-        # → 緊急疾患の不確実性を減らす検査が自然に高スコアになる
-        urgency_weights = []
-        for c in candidates:
-            u_str = c.get("urgency", "通常")
-            urgency_weights.append(self.URGENCY_SCORE.get(u_str, 0) + 1)  # 通常=1, 準緊急=2, 緊急=3, 超緊急=4
-        urgency_weights = np.array(urgency_weights, dtype=float)
+        # 重み = exp(cos_critical + cos_curable): 臨床重要度（見逃しコスト + 治療利益）
+        # → 緊急かつ治療可能な疾患の不確実性を減らす検査が自然に高スコアになる
+        clinical_weights = np.array([
+            self.disease_2c.get(c["disease_name"], {}).get("weight", 1.0)
+            for c in candidates
+        ], dtype=float)
 
         ranked = []
         for tname, tdata in test_disease_map.items():
-            score = self._expected_info_gain(candidates, tdata, urgency_weights)
+            score = self._expected_info_gain(candidates, tdata, clinical_weights)
 
             cost = max(tdata["cost_level"], 1)
             utility = score / cost
@@ -435,13 +497,13 @@ class VeSMedEngine:
         ranked.sort(key=lambda x: x["info_gain"], reverse=True)
         return ranked
 
-    def _expected_info_gain(self, candidates, test_data, urgency_weights) -> float:
+    def _expected_info_gain(self, candidates, test_data, clinical_weights) -> float:
         """
         1つの検査の重み付き期待情報利得を計算する。
 
         重み付きエントロピー H_w(D) = -Σ w_i × p_i × log(p_i) を使用。
-        w_i は疾患iの緊急度スコア（超緊急=4, 緊急=3, 準緊急=2, 通常=1）。
-        緊急疾患の不確実性を減らす検査ほど高スコアになる。
+        w_i = exp(cos_critical + cos_curable): 2Cスコアに基づく臨床重要度。
+        緊急かつ治療可能な疾患の不確実性を減らす検査ほど高スコアになる。
         """
         disease_test_info = {}
         for d in test_data["diseases"]:
@@ -469,7 +531,7 @@ class VeSMedEngine:
         sp_arr = np.array(sp_list)
 
         # 現在の重み付きエントロピー
-        h_prior = self._weighted_entropy(priors, urgency_weights)
+        h_prior = self._weighted_entropy(priors, clinical_weights)
 
         # P(T+) = Σ_i π_i * Se_i + (1-Σ_i π_i) * FPR_avg
         total_prior = np.sum(priors)
@@ -488,8 +550,8 @@ class VeSMedEngine:
         if posteriors_neg.sum() > 0:
             posteriors_neg = posteriors_neg / posteriors_neg.sum()
 
-        h_pos = self._weighted_entropy(posteriors_pos, urgency_weights)
-        h_neg = self._weighted_entropy(posteriors_neg, urgency_weights)
+        h_pos = self._weighted_entropy(posteriors_pos, clinical_weights)
+        h_neg = self._weighted_entropy(posteriors_neg, clinical_weights)
 
         info_gain = h_prior - (p_t_pos * h_pos + p_t_neg * h_neg)
         return max(0.0, info_gain)

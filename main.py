@@ -22,9 +22,11 @@ def format_candidates(candidates, top_n=10):
         elif urgency == "準緊急":
             urgency_mark = " !"
 
+        w = c.get("clinical_weight", 0)
         lines.append(
             f"  {i + 1:2d}. {c['disease_name']:<30s}  "
             f"π={c.get('prior', 0):.3f}  "
+            f"w={w:.2f}  "
             f"(類似度={c['similarity']:.3f})"
             f"{urgency_mark}"
         )
