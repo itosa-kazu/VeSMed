@@ -3,3 +3,4 @@ __pycache__/
 .claude/
 nul
 data/chroma_db/
+.env
