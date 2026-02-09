@@ -1,0 +1,570 @@
+"""
+VeSMed - 核心エンジン
+クエリ整理 → ベクトル検索 → 情報利得計算 → 検査推薦
+"""
+
+import json
+import math
+import os
+import numpy as np
+import chromadb
+from openai import OpenAI
+from config import (
+    LLM_API_KEY, LLM_BASE_URL, LLM_MODEL,
+    EMBEDDING_API_KEY, EMBEDDING_BASE_URL, EMBEDDING_MODEL,
+    TAU, TOP_K_DISEASES, TOP_K_TESTS,
+    DISEASES_JSONL, FINDINGS_JSONL, CHROMA_DIR, DATA_DIR,
+)
+
+
+class VeSMedEngine:
+    def __init__(self):
+        self.llm_client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
+        self.embed_client = OpenAI(api_key=EMBEDDING_API_KEY, base_url=EMBEDDING_BASE_URL)
+
+        # ChromaDB接続
+        self.chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
+        self.collection = self.chroma_client.get_collection("diseases")
+
+        # 検査名 名寄せマップ読み込み
+        self.test_name_map = {}
+        map_file = os.path.join(DATA_DIR, "test_name_map.json")
+        if os.path.exists(map_file):
+            with open(map_file, "r", encoding="utf-8") as f:
+                self.test_name_map = json.load(f)
+
+        # 疾患メタデータを全件メモリに読み込み（disease_name → dict）
+        self.disease_db = {}
+        if os.path.exists(DISEASES_JSONL):
+            with open(DISEASES_JSONL, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        d = json.loads(line)
+                        self.disease_db[d["disease_name"]] = d
+                    except (json.JSONDecodeError, KeyError):
+                        continue
+
+        # findings.jsonlを読み込み、relevant_testsにマージ
+        if os.path.exists(FINDINGS_JSONL):
+            with open(FINDINGS_JSONL, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        fd = json.loads(line)
+                        dname = fd["disease_name"]
+                        if dname in self.disease_db:
+                            existing = self.disease_db[dname].setdefault("relevant_tests", [])
+                            for item in fd.get("history_items", []) + fd.get("exam_items", []):
+                                existing.append(item)
+                    except (json.JSONDecodeError, KeyError):
+                        continue
+
+    # ----------------------------------------------------------------
+    # Step 1: クエリ整理（患者情報 → 標準化医学テキスト）
+    # ----------------------------------------------------------------
+    def rewrite_query(self, patient_text: str) -> str:
+        """患者情報をLLMで標準的な医学用語に整理する"""
+        response = self.llm_client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[
+                {"role": "system", "content": (
+                    "あなたは経験豊富な日本の臨床医です。\n"
+                    "患者情報を受け取り、標準的な医学用語で簡潔に整理してください。\n"
+                    "ルール：\n"
+                    "- 入力情報にない情報は絶対に追加しないこと\n"
+                    "- 標準的な医学用語への変換と構造化のみ行うこと\n"
+                    "- 年齢、性別、主訴、現病歴、既往歴、身体所見、バイタルサインの順で整理\n"
+                    "- 200-400字程度で出力\n"
+                    "- 説明や前置きは不要、整理されたテキストのみ出力"
+                )},
+                {"role": "user", "content": patient_text},
+            ],
+            temperature=0.1,
+            max_tokens=800,
+        )
+        return response.choices[0].message.content.strip()
+
+    # ----------------------------------------------------------------
+    # Step 1.5: 患者テキストから既実施検査・所見を抽出
+    # ----------------------------------------------------------------
+    def extract_done_tests(self, patient_text: str) -> list:
+        """
+        患者テキストから既に実施済みの検査とその所見を抽出する。
+        返り値: [{"test_name": str, "finding": str}, ...]
+        """
+        response = self.llm_client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[
+                {"role": "system", "content": (
+                    "あなたは経験豊富な日本の臨床医です。\n"
+                    "患者情報テキストから、既に実施済みの検査・画像・手技とその結果を抽出してください。\n"
+                    "ルール：\n"
+                    "- テキストに明示的に記載されている検査のみ抽出すること\n"
+                    "- 推測で検査を追加しないこと\n"
+                    "- 身体診察の所見（聴診、触診など）も含めること\n"
+                    "- 出力はJSONのみ。説明文やマークダウンは不要。最初の文字は [ にすること。"
+                )},
+                {"role": "user", "content": (
+                    f"以下の患者情報から既実施の検査と所見を抽出してください。\n\n"
+                    f"{patient_text}\n\n"
+                    f'出力形式: [{{"test_name": "検査名", "finding": "所見の要約"}}, ...]'
+                )},
+            ],
+            temperature=0.1,
+            max_tokens=2000,
+        )
+
+        import re
+        content = response.choices[0].message.content.strip()
+        match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", content, re.DOTALL)
+        if match:
+            content = match.group(1).strip()
+        start = content.find("[")
+        if start > 0:
+            content = content[start:]
+        content = re.sub(r",\s*([}\]])", r"\1", content)
+
+        try:
+            results = json.loads(content)
+            if isinstance(results, list):
+                return results
+        except json.JSONDecodeError:
+            pass
+        return []
+
+    # ----------------------------------------------------------------
+    # Step 2: ベクトル検索 → 候補疾患
+    # ----------------------------------------------------------------
+    def _embed_and_search(self, text: str, top_k: int) -> list:
+        """単一テキストでChromaDB検索。内部用。"""
+        resp = self.embed_client.embeddings.create(
+            model=EMBEDDING_MODEL,
+            input=[text],
+        )
+        query_embedding = resp.data[0].embedding
+
+        results = self.collection.query(
+            query_embeddings=[query_embedding],
+            n_results=top_k,
+        )
+
+        candidates = []
+        if results and results["ids"] and results["ids"][0]:
+            for i, doc_id in enumerate(results["ids"][0]):
+                distance = results["distances"][0][i]
+                similarity = 1.0 - distance
+                metadata = results["metadatas"][0][i]
+                candidates.append({
+                    "disease_name": metadata.get("disease_name", ""),
+                    "similarity": similarity,
+                    "category": metadata.get("category", ""),
+                    "urgency": metadata.get("urgency", ""),
+                })
+        return candidates
+
+    def search_diseases(self, rewritten_text: str, original_text: str = None, top_k: int = None) -> list:
+        """
+        デュアル検索: 書き換え文と原文の両方で検索し、結果をマージ。
+        各疾患は高い方の類似度を採用。クエリ書き換え失敗時のロバスト性を確保。
+
+        返り値: [{"disease_name": str, "similarity": float, "category": str}, ...]
+        """
+        if top_k is None:
+            top_k = TOP_K_DISEASES
+
+        # 書き換え文で検索（多めに取得してマージ）
+        pool_k = top_k * 2
+        candidates_rewritten = self._embed_and_search(rewritten_text, pool_k)
+
+        # 原文でも検索してマージ
+        if original_text and original_text.strip() != rewritten_text.strip():
+            candidates_original = self._embed_and_search(original_text, pool_k)
+        else:
+            candidates_original = []
+
+        # マージ: 疾患名をキーに、高い方の類似度を採用
+        merged = {}
+        for c in candidates_rewritten + candidates_original:
+            name = c["disease_name"]
+            if name not in merged or c["similarity"] > merged[name]["similarity"]:
+                merged[name] = c
+
+        # 類似度降順でソートし、top_kに絞る
+        result = sorted(merged.values(), key=lambda x: x["similarity"], reverse=True)
+        return result[:top_k]
+
+    # ----------------------------------------------------------------
+    # Step 3: Softmax → 先験確率
+    # ----------------------------------------------------------------
+    def compute_priors(self, candidates: list, tau: float = None) -> list:
+        """
+        候補疾患の類似度スコアをsoftmaxで先験確率に変換。
+        candidatesに"prior"フィールドを追加して返す。
+
+        cosine類似度は狭い範囲(例: 0.30-0.33)に集中するため、
+        min-max正規化で[0,1]に拡大してからsoftmaxを適用する。
+        """
+        if tau is None:
+            tau = TAU
+
+        if not candidates:
+            return candidates
+
+        sims = np.array([c["similarity"] for c in candidates])
+
+        # Min-max正規化: cosine類似度の微小差を [0, 1] に増幅
+        sim_min = sims.min()
+        sim_max = sims.max()
+        if sim_max - sim_min > 1e-9:
+            sims = (sims - sim_min) / (sim_max - sim_min)
+        else:
+            sims = np.ones_like(sims)
+
+        # softmax with temperature
+        exp_vals = np.exp(sims / tau)
+        priors = exp_vals / exp_vals.sum()
+
+        for i, c in enumerate(candidates):
+            c["prior"] = float(priors[i])
+
+        return candidates
+
+    # ----------------------------------------------------------------
+    # Step 4: 情報利得計算 → 検査ランキング
+    # ----------------------------------------------------------------
+    def rank_tests(self, candidates: list, done_tests: list = None) -> list:
+        """
+        候補疾患のrelevant_testsを集約し、
+        各検査の期待情報利得を計算してランキングする。
+
+        返り値: [{"test_name": str, "info_gain": float, "cost_level": int,
+                  "utility": float, "details": list}, ...]
+        """
+        if done_tests is None:
+            done_tests = []
+        # done_testsも名寄せして比較
+        done_set = set(self.test_name_map.get(t, t) for t in done_tests)
+
+        # 全候補疾患のrelevant_testsを集約
+        # test_name → [{"disease_name", "prior", "se_low", "sp_low", ...}]
+        test_disease_map = {}
+
+        for c in candidates:
+            d = self.disease_db.get(c["disease_name"])
+            if not d:
+                continue
+            prior = c.get("prior", 0.0)
+
+            for t in d.get("relevant_tests", []):
+                # 名寄せ: 生の検査名 → 正規名
+                tname = self.test_name_map.get(t["test_name"], t["test_name"])
+                if tname in done_set:
+                    continue
+
+                if tname not in test_disease_map:
+                    test_disease_map[tname] = {
+                        "test_name": tname,
+                        "cost_level": t.get("cost_level", 3),
+                        "invasiveness": t.get("invasiveness", 3),
+                        "turnaround_minutes": t.get("turnaround_minutes", 60),
+                        "diseases": [],
+                    }
+
+                se = t.get("sensitivity", [0.5, 0.5])
+                sp = t.get("specificity", [0.5, 0.5])
+                test_disease_map[tname]["diseases"].append({
+                    "disease_name": c["disease_name"],
+                    "prior": prior,
+                    "se_low": se[0] if isinstance(se, list) else se,
+                    "sp_low": sp[0] if isinstance(sp, list) else sp,
+                    "se_high": se[1] if isinstance(se, list) and len(se) > 1 else (se[0] if isinstance(se, list) else se),
+                    "sp_high": sp[1] if isinstance(sp, list) and len(sp) > 1 else (sp[0] if isinstance(sp, list) else sp),
+                    "purpose": t.get("purpose", ""),
+                    "condition_notes": t.get("condition_notes", ""),
+                })
+
+        # 各検査の期待情報利得を計算
+        ranked = []
+        for tname, tdata in test_disease_map.items():
+            info_gain = self._expected_info_gain(candidates, tdata)
+            cost = max(tdata["cost_level"], 1)
+            utility = info_gain / cost
+
+            ranked.append({
+                "test_name": tname,
+                "info_gain": round(info_gain, 4),
+                "cost_level": tdata["cost_level"],
+                "invasiveness": tdata["invasiveness"],
+                "turnaround_minutes": tdata["turnaround_minutes"],
+                "utility": round(utility, 4),
+                "details": tdata["diseases"],
+            })
+
+        ranked.sort(key=lambda x: x["info_gain"], reverse=True)
+        return ranked
+
+    def _expected_info_gain(self, candidates, test_data) -> float:
+        """
+        1つの検査の期待情報利得 I(D;T) を計算する。
+
+        計算方法：
+        - 現在の先験分布のエントロピー H(D)
+        - 検査陽性/陰性の場合それぞれの事後分布のエントロピー H(D|T=+), H(D|T=-)
+        - 期待情報利得 = H(D) - [P(T=+)H(D|T=+) + P(T=-)H(D|T=-)]
+        """
+        # 検査がカバーしない疾患は「検査の影響なし」として扱う
+        # Se/Spは保守的に下界を使用
+        disease_test_info = {}
+        for d in test_data["diseases"]:
+            disease_test_info[d["disease_name"]] = {
+                "se": d["se_low"],
+                "sp": d["sp_low"],
+            }
+
+        priors = []
+        se_list = []
+        sp_list = []
+
+        for c in candidates:
+            p = c.get("prior", 0.0)
+            priors.append(p)
+            if c["disease_name"] in disease_test_info:
+                se_list.append(disease_test_info[c["disease_name"]]["se"])
+                sp_list.append(disease_test_info[c["disease_name"]]["sp"])
+            else:
+                # この検査がこの疾患に関係ない → 検査結果はランダム（Se=Sp=0.5相当）
+                se_list.append(0.5)
+                sp_list.append(0.5)
+
+        priors = np.array(priors)
+        se_arr = np.array(se_list)
+        sp_arr = np.array(sp_list)
+
+        # 現在のエントロピー
+        h_prior = self._entropy(priors)
+
+        # P(T=+) = Σ_i [P(D_i) * Se_i + P(not D_i) * (1-Sp_i)] ... 近似
+        # 簡略化: 各疾患について独立に計算
+        # P(T=+ | D_i) = Se_i,  P(T=+ | not D_i) = 1-Sp_i
+        p_test_pos = np.sum(priors * se_arr) + np.sum(priors * (1 - sp_arr)) - np.sum(priors * (1 - sp_arr))
+        # 正確には: P(T+) = Σ_i P(D_i)*Se_i + (1 - Σ_i P(D_i)) * (1-Sp_avg)
+        # ここでは多疾患モデルの近似として:
+        p_pos_given_each = se_arr  # P(T+|D_i)
+        p_neg_given_each = 1 - se_arr  # P(T-|D_i)
+
+        # 「どの疾患でもない」確率を考慮する余地はあるが、
+        # Top-kの中での相対比較なので省略
+
+        # P(T+) ≈ Σ P(D_i) * P(T+|D_i)  (各疾患を排他的と仮定した近似)
+        # ただし「疾患でない場合の偽陽性」も考慮
+        # 簡易計算: 各疾患iが真の場合のT+確率を加重平均
+        p_t_pos = float(np.sum(priors * se_arr + (1 - priors) * (1 - sp_arr)))
+        # 上記は過大評価する可能性があるので正規化
+        # より正確なアプローチ: 二値の場合の公式を多疾患に拡張
+        # P(T+) = Σ_i π_i * Se_i + (1-Σ_i π_i) * FPR_avg
+        total_prior = np.sum(priors)
+        avg_fpr = float(np.mean(1 - sp_arr))
+        p_t_pos = float(np.sum(priors * se_arr)) + max(0, 1 - total_prior) * avg_fpr
+        p_t_pos = np.clip(p_t_pos, 0.001, 0.999)
+        p_t_neg = 1.0 - p_t_pos
+
+        # 事後確率: P(D_i|T+) ∝ π_i * Se_i
+        posteriors_pos = priors * se_arr
+        if posteriors_pos.sum() > 0:
+            posteriors_pos = posteriors_pos / posteriors_pos.sum()
+
+        # P(D_i|T-) ∝ π_i * (1-Se_i)
+        posteriors_neg = priors * (1 - se_arr)
+        if posteriors_neg.sum() > 0:
+            posteriors_neg = posteriors_neg / posteriors_neg.sum()
+
+        h_pos = self._entropy(posteriors_pos)
+        h_neg = self._entropy(posteriors_neg)
+
+        info_gain = h_prior - (p_t_pos * h_pos + p_t_neg * h_neg)
+        return max(0.0, info_gain)
+
+    @staticmethod
+    def _entropy(probs):
+        """確率分布のエントロピー (bits)"""
+        probs = probs[probs > 0]
+        if len(probs) == 0:
+            return 0.0
+        return float(-np.sum(probs * np.log2(probs)))
+
+    # ----------------------------------------------------------------
+    # Step 5: LLMで所見を解釈 → 疾患ごとにベイズ更新
+    # ----------------------------------------------------------------
+    def interpret_and_update(self, candidates: list, test_name: str, finding: str) -> tuple:
+        """
+        検査所見をLLMで解釈し、各候補疾患について陽性/陰性+Se/Spを判定してベイズ更新。
+
+        - 格納済みSe/Spがある検査: LLMは陽性/陰性のみ判定、Se/SpはDBから取得
+        - 格納されていない所見（症状・身体所見・ROS等）: LLMがSe/Spも推定
+
+        返り値: (updated_candidates, interpretation_dict)
+        """
+        normalized_name = self.test_name_map.get(test_name, test_name)
+
+        # 各疾患のSe/Sp + purpose を取得（格納済みのもの）
+        disease_se_sp = {}
+        disease_purpose = {}
+        for c in candidates:
+            d = self.disease_db.get(c["disease_name"])
+            if not d:
+                continue
+            for t in d.get("relevant_tests", []):
+                tname = self.test_name_map.get(t["test_name"], t["test_name"])
+                if tname == normalized_name:
+                    se = t.get("sensitivity", [0.5, 0.5])
+                    sp = t.get("specificity", [0.5, 0.5])
+                    se_val = se[0] if isinstance(se, list) else se
+                    sp_val = sp[0] if isinstance(sp, list) else sp
+                    disease_se_sp[c["disease_name"]] = (se_val, sp_val)
+                    disease_purpose[c["disease_name"]] = t.get("purpose", "")
+                    break
+
+        # Se/Spが格納されているかどうかでプロンプトを分岐
+        has_stored_se_sp = len(disease_se_sp) > 0
+
+        # 全候補疾患を対象にする（格納なしの所見でも全疾患に影響しうる）
+        disease_lines = []
+        for c in candidates:
+            name = c["disease_name"]
+            if name in disease_purpose:
+                disease_lines.append(f"- {name}（検査目的: {disease_purpose[name]}）")
+            else:
+                disease_lines.append(f"- {name}")
+
+        diseases_text = "\n".join(disease_lines)
+
+        if has_stored_se_sp:
+            # 格納済み検査: 陽性/陰性の判定のみ
+            system_msg = (
+                "あなたは経験豊富な日本の臨床医です。\n"
+                "検査所見を受け取り、各候補疾患について、この所見がその疾患の\n"
+                "「陽性所見（支持する）」か「陰性所見（否定する）」かを判定してください。\n"
+                "出力はJSONのみ。説明文やマークダウンは不要。最初の文字は { にすること。"
+            )
+            user_msg = (
+                f"検査名: {normalized_name}\n"
+                f"所見: {finding}\n\n"
+                f"候補疾患:\n{diseases_text}\n\n"
+                f"各疾患について判定してください。出力形式:\n"
+                f'{{"疾患名": {{"判定": "陽性" or "陰性", "理由": "簡潔な理由"}}, ...}}'
+            )
+        else:
+            # 未格納の所見（症状・身体所見・ROS等）: 判定 + Se/Sp推定
+            system_msg = (
+                "あなたは経験豊富な日本の臨床医です。\n"
+                "臨床所見（症状・身体所見・検査結果など）を受け取り、\n"
+                "各候補疾患について以下を判定してください:\n"
+                "1. この所見がその疾患を「陽性（支持する）」か「陰性（否定する）」か\n"
+                "2. この所見のその疾患に対する感度(sensitivity)と特異度(specificity)の推定値\n"
+                "   - 教科書・ガイドラインの一般的な値を参考に\n"
+                "   - 不明な場合は臨床経験に基づく合理的な推定でよい\n"
+                "出力はJSONのみ。説明文やマークダウンは不要。最初の文字は { にすること。"
+            )
+            user_msg = (
+                f"所見: {test_name}: {finding}\n\n"
+                f"候補疾患:\n{diseases_text}\n\n"
+                f"各疾患について判定してください。出力形式:\n"
+                f'{{"疾患名": {{"判定": "陽性" or "陰性", "se": 0.0~1.0, "sp": 0.0~1.0, "理由": "簡潔な理由"}}, ...}}'
+            )
+
+        response = self.llm_client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.1,
+            max_tokens=4000,
+        )
+
+        # LLM出力をパース
+        import re
+        content = response.choices[0].message.content.strip()
+        match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", content, re.DOTALL)
+        if match:
+            content = match.group(1).strip()
+        start = content.find("{")
+        if start > 0:
+            content = content[start:]
+        content = re.sub(r",\s*([}\]])", r"\1", content)
+
+        try:
+            interpretation = json.loads(content)
+        except json.JSONDecodeError:
+            interpretation = {c["disease_name"]: {"判定": "陽性", "理由": "解釈不能"} for c in candidates}
+
+        # ベイズ更新（疾患ごとに陽性/陰性が異なる）
+        # 原則: 検査と無関係な疾患は LR=1.0（確率不変）
+        priors = np.array([c.get("prior", 0.0) for c in candidates])
+        posteriors = np.zeros_like(priors)
+
+        for i, c in enumerate(candidates):
+            p = priors[i]
+            name = c["disease_name"]
+            interp = interpretation.get(name, {})
+            is_positive = interp.get("判定", "陽性") == "陽性"
+
+            if name in disease_se_sp:
+                # この疾患にSe/Spが格納されている → 関連あり
+                se, sp = disease_se_sp[name]
+                if is_positive:
+                    posteriors[i] = p * se
+                else:
+                    posteriors[i] = p * (1 - se)
+            elif not has_stored_se_sp:
+                # 全疾患にSe/Sp格納なし（症状・ROS等）→ LLM推定値を使用
+                se = float(interp.get("se", 0.5))
+                sp = float(interp.get("sp", 0.5))
+                if is_positive:
+                    posteriors[i] = p * se
+                else:
+                    posteriors[i] = p * (1 - se)
+            else:
+                # Se/Sp格納ありの検査だが、この疾患には無関係 → LR=1.0（確率不変）
+                posteriors[i] = p
+
+        # 正規化
+        total = posteriors.sum()
+        if total > 0:
+            posteriors = posteriors / total
+
+        updated = []
+        for i, c in enumerate(candidates):
+            updated.append({
+                **c,
+                "prior": float(posteriors[i]),
+            })
+        updated.sort(key=lambda x: x["prior"], reverse=True)
+
+        return updated, interpretation
+
+    def find_matching_tests(self, candidates: list, done_tests: list = None) -> list:
+        """
+        候補疾患のrelevant_testsから、UIで選択可能な検査名リストを返す。
+        done_testsに含まれる検査は除外。
+        """
+        if done_tests is None:
+            done_tests = []
+        done_set = set(self.test_name_map.get(t, t) for t in done_tests)
+
+        test_names = set()
+        for c in candidates:
+            d = self.disease_db.get(c["disease_name"])
+            if not d:
+                continue
+            for t in d.get("relevant_tests", []):
+                tname = self.test_name_map.get(t["test_name"], t["test_name"])
+                if tname not in done_set:
+                    test_names.add(tname)
+
+        return sorted(test_names)
