@@ -55,9 +55,9 @@ def build_index():
     ids = []
     metadatas = []
     for i, d in enumerate(diseases):
-        desc = d.get("description_for_embedding", "")
+        desc = d.get("findings_description", "")
         if not desc:
-            print(f"  警告: {d.get('disease_name', '不明')} にdescription_for_embeddingがありません、スキップ")
+            print(f"  警告: {d.get('disease_name', '不明')} にfindings_descriptionがありません、スキップ")
             continue
         texts.append(desc)
         ids.append(f"disease_{i}")

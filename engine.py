@@ -17,7 +17,7 @@ from config import (
     LLM_MAX_RETRIES,
     EMBEDDING_API_KEY, EMBEDDING_BASE_URL, EMBEDDING_MODEL,
     TAU,
-    DISEASES_JSONL, FINDINGS_JSONL, CHROMA_DIR, DATA_DIR,
+    DISEASES_JSONL, TESTS_JSONL, FINDINGS_JSONL, CHROMA_DIR, DATA_DIR,
 )
 
 
@@ -72,6 +72,27 @@ class VeSMedEngine:
         # 2Cスコア（Critical / Curable）をembeddingで計算
         self.disease_2c = {}  # disease_name → {"critical": float, "curable": float, "weight": float}
         self._compute_2c_scores()
+
+        # 検査メタデータを全件メモリに読み込み（test_name → dict）
+        self.test_db = {}
+        if os.path.exists(TESTS_JSONL):
+            with open(TESTS_JSONL, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        t = json.loads(line)
+                        self.test_db[t["test_name"]] = t
+                    except (json.JSONDecodeError, KeyError):
+                        continue
+
+        # 類似度行列（疾患×検査）をembeddingで計算
+        self.sim_matrix = None    # (N_diseases, N_tests) ndarray
+        self.disease_idx = {}     # disease_name → row index
+        self.test_idx = {}        # test_name → col index
+        self.test_names = []      # col順の検査名リスト
+        self._compute_similarity_matrix()
 
         # 検査コスト（embedding推定）
         self.test_embed_cost = {}  # test_name → float (exp(cos_invasive))
@@ -138,6 +159,109 @@ class VeSMedEngine:
             self.disease_2c[dname] = {**scores, "weight": weight}
 
         print(f"[2C] {len(self.disease_2c)}疾患の2Cスコア計算完了")
+
+    # ----------------------------------------------------------------
+    # 類似度行列計算（疾患×検査、起動時に1回）
+    # ----------------------------------------------------------------
+    def _compute_similarity_matrix(self):
+        """
+        疾患findings_description × 検査findings_description のcos類似度行列を計算。
+        疾患embeddingはChromaDBから、検査embeddingはAPI+キャッシュから取得。
+        結果: self.sim_matrix (N_diseases, N_tests), self.disease_idx, self.test_idx
+        """
+        cache_file = os.path.join(DATA_DIR, "sim_matrix.npz")
+
+        # 検査リスト構築（findings_descriptionがあるもののみ）
+        self.test_names = [
+            tname for tname, tdata in self.test_db.items()
+            if tdata.get("findings_description")
+        ]
+        self.test_idx = {name: i for i, name in enumerate(self.test_names)}
+
+        # 疾患リスト構築（ChromaDBの順序）
+        n_diseases = self.collection.count()
+        all_ids = [f"disease_{i}" for i in range(n_diseases)]
+        disease_names = []
+        disease_embs_list = []
+        batch_size = 100
+        for start in range(0, len(all_ids), batch_size):
+            batch_ids = all_ids[start:start + batch_size]
+            result = self.collection.get(ids=batch_ids, include=["embeddings", "metadatas"])
+            for j, mid in enumerate(result["ids"]):
+                dname = result["metadatas"][j].get("disease_name", "")
+                disease_names.append(dname)
+                disease_embs_list.append(result["embeddings"][j])
+        self.disease_idx = {name: i for i, name in enumerate(disease_names)}
+        disease_embs = np.array(disease_embs_list, dtype=np.float32)
+
+        # キャッシュチェック
+        if os.path.exists(cache_file):
+            data = np.load(cache_file, allow_pickle=True)
+            cached_diseases = list(data["disease_names"])
+            cached_tests = list(data["test_names"])
+            if cached_diseases == disease_names and cached_tests == self.test_names:
+                self.sim_matrix = data["sim_matrix"]
+                print(f"[類似度行列] キャッシュから読込 {self.sim_matrix.shape}")
+                return
+
+        # 検査embeddingを取得（バッチ、並行）
+        test_texts = [self.test_db[t]["findings_description"] for t in self.test_names]
+        test_embs = self._batch_embed(test_texts)
+        if test_embs is None:
+            print("[類似度行列] 検査embedding失敗")
+            return
+
+        # 正規化してcos類似度 = 内積
+        d_norms = np.linalg.norm(disease_embs, axis=1, keepdims=True)
+        d_norms[d_norms == 0] = 1.0
+        disease_embs_normed = disease_embs / d_norms
+
+        t_norms = np.linalg.norm(test_embs, axis=1, keepdims=True)
+        t_norms[t_norms == 0] = 1.0
+        test_embs_normed = test_embs / t_norms
+
+        self.sim_matrix = disease_embs_normed @ test_embs_normed.T  # (386, 329)
+
+        # キャッシュ保存
+        np.savez(
+            cache_file,
+            sim_matrix=self.sim_matrix,
+            disease_names=np.array(disease_names, dtype=object),
+            test_names=np.array(self.test_names, dtype=object),
+        )
+        print(f"[類似度行列] {self.sim_matrix.shape} 計算・キャッシュ完了")
+
+    def _batch_embed(self, texts, batch_size=50, max_workers=10):
+        """テキストリストをバッチ並行でembedding。ndarray (N, dim) を返す。"""
+        batches = []
+        for i in range(0, len(texts), batch_size):
+            batches.append((i, texts[i:i + batch_size]))
+
+        all_embs = [None] * len(texts)
+
+        def _embed_one(batch_info):
+            start_idx, batch = batch_info
+            for attempt in range(3):
+                try:
+                    resp = self.embed_client.embeddings.create(
+                        model=EMBEDDING_MODEL, input=batch,
+                    )
+                    return start_idx, [item.embedding for item in resp.data]
+                except Exception as e:
+                    print(f"[embed] batch(offset={start_idx}) 失敗(試行{attempt+1}): {e}")
+                    time.sleep(2 ** attempt)
+            return start_idx, None
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(_embed_one, b) for b in batches]
+            for future in as_completed(futures):
+                start_idx, result = future.result()
+                if result is None:
+                    return None
+                for j, emb in enumerate(result):
+                    all_embs[start_idx + j] = emb
+
+        return np.array(all_embs, dtype=np.float32)
 
     # ----------------------------------------------------------------
     # 検査コスト推定（embedding、キャッシュ付き）
@@ -375,25 +499,16 @@ class VeSMedEngine:
     # ----------------------------------------------------------------
     # Step 1.6: 既実施検査の名寄せ（LLMで照合）
     # ----------------------------------------------------------------
-    def normalize_done_tests(self, done_tests: list, candidates: list) -> list:
+    def normalize_done_tests(self, done_tests: list, candidates: list = None) -> list:
         """
-        extract_done_testsの出力を、候補疾患のrelevant_testsの検査名に名寄せする。
+        extract_done_testsの出力を、tests.jsonlの検査名に名寄せする。
         done_tests: [{"test_name": "血液検査(WBC)", "finding": "16000"}, ...]
-        candidates: compute_priors済みの候補疾患リスト
         返り値: 名寄せ済みの検査名リスト ["白血球数", "CRP", ...]
         """
-        if not done_tests or not candidates:
+        if not done_tests:
             return []
 
-        # 候補疾患のrelevant_testsから検査名を収集
-        db_test_names = set()
-        for c in candidates:
-            d = self.disease_db.get(c["disease_name"])
-            if not d:
-                continue
-            for t in d.get("relevant_tests", []):
-                db_test_names.add(t["test_name"])
-
+        db_test_names = set(self.test_names)
         if not db_test_names:
             return [d["test_name"] for d in done_tests]
 
@@ -439,7 +554,6 @@ class VeSMedEngine:
         try:
             results = json.loads(content)
             if isinstance(results, list):
-                # DB検査名に存在するもののみ返す
                 return [r for r in results if r in db_test_names]
         except json.JSONDecodeError:
             pass
@@ -533,145 +647,76 @@ class VeSMedEngine:
         return candidates
 
     # ----------------------------------------------------------------
-    # Step 4: 情報利得計算 → 検査ランキング
+    # Step 4: 検査ランキング（prior加重分散）
     # ----------------------------------------------------------------
     def rank_tests(self, candidates: list, done_tests: list = None) -> list:
         """
-        候補疾患のrelevant_testsを集約し、
-        各検査の期待情報利得を計算してランキングする。
+        各検査について、疑い疾患群に対するcos類似度のprior加重分散を計算。
+        分散が大きい = 疾患間でバラつく = 鑑別に有用な検査。
 
-        返り値: [{"test_name": str, "info_gain": float, "cost_level": int,
-                  "utility": float, "details": list}, ...]
+        score = Var_prior(cos(D_i, T_j)) × 2C臨床重み
+        utility = score / embed_cost
+
+        返り値: [{"test_name": str, "score": float, "embed_cost": float,
+                  "utility": float}, ...]
         """
         if done_tests is None:
             done_tests = []
-        # done_testsも名寄せして比較
         done_set = set(self.test_name_map.get(t, t) for t in done_tests)
 
-        # 全候補疾患のrelevant_testsを集約
-        # test_name → [{"disease_name", "prior", "se_low", "sp_low", ...}]
-        test_disease_map = {}
+        if self.sim_matrix is None or len(self.test_names) == 0:
+            return []
 
-        for c in candidates:
-            d = self.disease_db.get(c["disease_name"])
-            if not d:
-                continue
-            prior = c.get("prior", 0.0)
-
-            for t in d.get("relevant_tests", []):
-                # 名寄せ: 生の検査名 → 正規名
-                tname = self.test_name_map.get(t["test_name"], t["test_name"])
-                if tname in done_set:
-                    continue
-
-                if tname not in test_disease_map:
-                    test_disease_map[tname] = {
-                        "test_name": tname,
-                        "cost_level": t.get("cost_level", 3),
-                        "invasiveness": t.get("invasiveness", 3),
-                        "turnaround_minutes": t.get("turnaround_minutes", 60),
-                        "diseases": [],
-                    }
-
-                se = t.get("sensitivity", [0.5, 0.5])
-                sp = t.get("specificity", [0.5, 0.5])
-                test_disease_map[tname]["diseases"].append({
-                    "disease_name": c["disease_name"],
-                    "prior": prior,
-                    "se_low": se[0] if isinstance(se, list) else se,
-                    "sp_low": sp[0] if isinstance(sp, list) else sp,
-                    "se_high": se[1] if isinstance(se, list) and len(se) > 1 else (se[0] if isinstance(se, list) else se),
-                    "sp_high": sp[1] if isinstance(sp, list) and len(sp) > 1 else (sp[0] if isinstance(sp, list) else sp),
-                    "purpose": t.get("purpose", ""),
-                    "condition_notes": t.get("condition_notes", ""),
-                })
-
-        # 各検査の重み付き情報利得を計算
-        # 重み = exp(cos_critical + cos_curable): 臨床重要度（見逃しコスト + 治療利益）
-        # → 緊急かつ治療可能な疾患の不確実性を減らす検査が自然に高スコアになる
-        clinical_weights = np.array([
+        # 候補疾患の生cos類似度と2C重みを配列化
+        raw_sims = np.array([c.get("similarity", 0.0) for c in candidates], dtype=float)
+        weights = np.array([
             self.disease_2c.get(c["disease_name"], {}).get("weight", 1.0)
             for c in candidates
         ], dtype=float)
+        # 局所重み: 平均以上の疾患のみ（遠い疾患はゼロ）
+        sim_centered = np.maximum(0.0, raw_sims - raw_sims.mean())
+        w = sim_centered * weights
+        w_sum = w.sum()
+        if w_sum > 0:
+            w = w / w_sum
+
+        # 候補疾患のsim_matrix行を取得 → (N_candidates, N_tests)
+        disease_rows = []
+        for c in candidates:
+            row = self.disease_idx.get(c["disease_name"])
+            disease_rows.append(row if row is not None else -1)
+        disease_rows = np.array(disease_rows)
+
+        valid_mask = disease_rows >= 0
+        sim_sub = np.zeros((len(candidates), len(self.test_names)))
+        sim_sub[valid_mask] = self.sim_matrix[disease_rows[valid_mask]]
+
+        # prior加重分散を一括計算: Var_w = Σ w_i (x_i - μ)^2
+        # μ = Σ w_i * x_i  (N_tests,)
+        w_col = w[:, np.newaxis]  # (N_candidates, 1)
+        mu = (w_col * sim_sub).sum(axis=0)  # (N_tests,)
+        var = (w_col * (sim_sub - mu) ** 2).sum(axis=0)  # (N_tests,)
 
         ranked = []
-        for tname, tdata in test_disease_map.items():
-            score = self._expected_info_gain(candidates, tdata, clinical_weights)
+        for j, tname in enumerate(self.test_names):
+            if tname in done_set:
+                continue
 
-            # コスト = exp(cos_sim(検査名, 侵襲アンカー))
+            score = float(var[j])
             embed_cost = self.test_embed_cost.get(tname, math.exp(0.5))
             utility = score / embed_cost
 
+            tdata = self.test_db.get(tname, {})
             ranked.append({
                 "test_name": tname,
-                "info_gain": round(score, 4),
+                "score": round(score, 6),
                 "embed_cost": round(embed_cost, 2),
-                "turnaround_minutes": tdata["turnaround_minutes"],
-                "utility": round(utility, 4),
-                "details": tdata["diseases"],
+                "turnaround_minutes": tdata.get("turnaround_minutes", 60),
+                "utility": round(utility, 6),
             })
 
         ranked.sort(key=lambda x: x["utility"], reverse=True)
         return ranked
-
-    def _expected_info_gain(self, candidates, test_data, clinical_weights) -> float:
-        """
-        1つの検査の重み付き期待情報利得を計算する。
-
-        重み付きエントロピー H_w(D) = -Σ w_i × p_i × log(p_i) を使用。
-        w_i = exp(cos_critical + cos_curable): 2Cスコアに基づく臨床重要度。
-        緊急かつ治療可能な疾患の不確実性を減らす検査ほど高スコアになる。
-        """
-        disease_test_info = {}
-        for d in test_data["diseases"]:
-            disease_test_info[d["disease_name"]] = {
-                "se": d["se_low"],
-                "sp": d["sp_low"],
-            }
-
-        priors = []
-        se_list = []
-        sp_list = []
-
-        for c in candidates:
-            p = c.get("prior", 0.0)
-            priors.append(p)
-            if c["disease_name"] in disease_test_info:
-                se_list.append(disease_test_info[c["disease_name"]]["se"])
-                sp_list.append(disease_test_info[c["disease_name"]]["sp"])
-            else:
-                se_list.append(0.5)
-                sp_list.append(0.5)
-
-        priors = np.array(priors)
-        se_arr = np.array(se_list)
-        sp_arr = np.array(sp_list)
-
-        # 現在の重み付きエントロピー
-        h_prior = self._weighted_entropy(priors, clinical_weights)
-
-        # P(T+) = Σ_i π_i * Se_i + (1-Σ_i π_i) * FPR_avg
-        total_prior = np.sum(priors)
-        avg_fpr = float(np.mean(1 - sp_arr))
-        p_t_pos = float(np.sum(priors * se_arr)) + max(0, 1 - total_prior) * avg_fpr
-        p_t_pos = np.clip(p_t_pos, 0.001, 0.999)
-        p_t_neg = 1.0 - p_t_pos
-
-        # 事後確率: P(D_i|T+) ∝ π_i * Se_i
-        posteriors_pos = priors * se_arr
-        if posteriors_pos.sum() > 0:
-            posteriors_pos = posteriors_pos / posteriors_pos.sum()
-
-        # P(D_i|T-) ∝ π_i * (1-Se_i)
-        posteriors_neg = priors * (1 - se_arr)
-        if posteriors_neg.sum() > 0:
-            posteriors_neg = posteriors_neg / posteriors_neg.sum()
-
-        h_pos = self._weighted_entropy(posteriors_pos, clinical_weights)
-        h_neg = self._weighted_entropy(posteriors_neg, clinical_weights)
-
-        info_gain = h_prior - (p_t_pos * h_pos + p_t_neg * h_neg)
-        return max(0.0, info_gain)
 
     @staticmethod
     def _weighted_entropy(probs, weights):
@@ -830,21 +875,9 @@ class VeSMedEngine:
 
     def find_matching_tests(self, candidates: list, done_tests: list = None) -> list:
         """
-        候補疾患のrelevant_testsから、UIで選択可能な検査名リストを返す。
-        done_testsに含まれる検査は除外。
+        全329検査からdone_testsを除外した検査名リストを返す。
         """
         if done_tests is None:
             done_tests = []
         done_set = set(self.test_name_map.get(t, t) for t in done_tests)
-
-        test_names = set()
-        for c in candidates:
-            d = self.disease_db.get(c["disease_name"])
-            if not d:
-                continue
-            for t in d.get("relevant_tests", []):
-                tname = self.test_name_map.get(t["test_name"], t["test_name"])
-                if tname not in done_set:
-                    test_names.add(tname)
-
-        return sorted(test_names)
+        return sorted(t for t in self.test_names if t not in done_set)

@@ -14,8 +14,8 @@ LLM_FALLBACK_BASE_URL = os.environ.get("LLM_FALLBACK_BASE_URL", "https://api.12a
 LLM_FALLBACK_MODEL = os.environ.get("LLM_FALLBACK_MODEL", "gemini-3-pro-preview")
 
 # Embedding API設定
-EMBEDDING_API_KEY = os.environ.get("EMBEDDING_API_KEY", "")
-EMBEDDING_BASE_URL = os.environ.get("EMBEDDING_BASE_URL", "https://new.lemonapi.site/v1")
+EMBEDDING_API_KEY = os.environ.get("EMBEDDING_API_KEY", "REDACTED_OLD_EMBEDDING_KEY")
+EMBEDDING_BASE_URL = os.environ.get("EMBEDDING_BASE_URL", "https://api.siliconflow.cn/v1")
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-8B")
 
 # リトライ設定

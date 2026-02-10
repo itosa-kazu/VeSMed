@@ -525,6 +525,162 @@ async def cmd_findings_async(args):
 
 
 # ----------------------------------------------------------------
+# 所見ベースdescription生成（疾患・検査を同一所見空間に配置）
+# ----------------------------------------------------------------
+
+DISEASE_FINDINGS_PROMPT = """\
+あなたは日本の臨床医学に精通した専門家です。
+与えられた疾患について、患者で観察されるすべての所見を網羅的かつ詳細に列挙してください。
+
+## ルール
+- 出力はプレーンテキストのみ（JSON不要、マークダウン不要、コードブロック不要）
+- 以下の5カテゴリすべてについて、該当する所見を漏れなく詳細に記述すること：
+  1. 症状（主訴、随伴症状、陰性症状も含む）
+  2. バイタルサイン（体温、脈拍、血圧、呼吸数、SpO2）
+  3. 身体所見（視診、触診、打診、聴診）
+  4. 血液・尿検査異常（具体的な検査名と異常の方向：上昇/低下/陽性等）
+  5. 画像・生理検査所見（X線、CT、MRI、エコー、心電図等の具体的異常）
+- 各カテゴリ内で頻度の高い所見から順に記述
+- 教科書的定義や病態説明は不要、観察可能な所見のみ
+- 所見ごとに括弧で補足情報（程度、条件、時期）を付記
+
+## 出力例（急性心筋梗塞）
+突然発症の胸骨後部圧迫痛（持続20分以上、ニトロ無効、左肩・左腕・顎への放散）、冷汗、嘔気嘔吐、呼吸困難、死の恐怖感、失神（下壁梗塞で迷走神経反射時）。発熱（37-38℃、24-48時間後）、頻脈（交感神経亢進）または徐脈（下壁梗塞で房室ブロック時）、血圧低下（広範囲梗塞・右室梗塞でショック）、頻呼吸、SpO2低下（肺うっ血時）。顔面蒼白、冷汗、頸静脈怒張（右心不全合併時）、III音・IV音聴取、心尖部収縮期雑音（乳頭筋機能不全による僧帽弁逆流）、肺野湿性ラ音（Killip II以上）、下腿浮腫（右心不全時）。心電図ST上昇（責任冠動脈領域の誘導）、対側誘導のST低下（mirror image）、異常Q波（数時間〜数日後）、T波陰転化。トロポニンI/T著明上昇（発症3-6時間後、ピーク12-24時間）、CK-MB上昇（発症4-8時間後）、LDH上昇（遅発性、24-48時間後）、白血球増多（12,000-15,000/μL）、CRP上昇（24-48時間後）、BNP/NT-proBNP上昇、AST上昇、血糖上昇（ストレス反応）、D-dimer軽度上昇。心エコー壁運動異常（責任領域のakinesis/hypokinesis）、EF低下、僧帽弁逆流、心嚢液貯留（Dressler症候群時）。胸部X線で肺うっ血像、心拡大、胸水（重症時）。"""
+
+TEST_FINDINGS_PROMPT = """\
+あなたは日本の臨床医学に精通した専門家です。
+与えられた検査について、検出・評価できるすべての所見を網羅的かつ詳細に列挙してください。
+
+## ルール
+- 出力はプレーンテキストのみ（JSON不要、マークダウン不要、コードブロック不要）
+- 以下の3カテゴリすべてについて詳細に記述すること：
+  1. 異常所見とその臨床的意義（検査値の方向＋示唆する疾患・病態を具体的に列挙）
+  2. 正常所見が除外できる疾患・病態
+  3. 偽陽性・偽陰性の条件（薬剤、時期、合併症、年齢等）
+- 具体的な所見名と方向（上昇/低下/陽性/陰性等）を明記
+- 異常の程度による鑑別（軽度上昇 vs 著明上昇など）も記述
+
+## 出力例（トロポニンI/T）
+トロポニン上昇：心筋壊死を示唆。著明上昇（基準値の100倍以上）は急性心筋梗塞に特徴的（STEMI/NSTEMI）。中等度上昇（10-100倍）は急性心筋炎、たこつぼ心筋症、肺塞栓症（右室負荷）。軽度上昇（1-10倍）は慢性心不全、腎不全（クリアランス低下）、敗血症（需要虚血）、心房細動（頻脈性）、心臓手術後、激しい運動後。トロポニン正常：発症6時間以降であれば心筋壊死をほぼ否定（陰性的中率99%以上）。ただし超急性期（発症3時間以内）は偽陰性あり、6-12時間後の再検が必要。高感度トロポニンでは慢性腎不全で持続的軽度上昇（偽陽性）。経時的変化（rise and fall パターン）が急性心筋障害の診断に重要。"""
+
+
+def read_jsonl(filepath):
+    """JSONLファイルを読み込んでリストで返す"""
+    entries = []
+    if not os.path.exists(filepath):
+        return entries
+    with open(filepath, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    return entries
+
+
+def write_jsonl(filepath, entries):
+    """リストをJSONLファイルに書き出す"""
+    with open(filepath, "w", encoding="utf-8") as f:
+        for entry in entries:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+async def _gen_findings_one(client, semaphore, name, category, system_prompt, index, total):
+    """1エントリの findings_description を生成"""
+    async with semaphore:
+        label = f"[{index + 1}/{total}] {name}"
+        try:
+            response = await client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"{name}（{category}）"},
+                ],
+                temperature=0.2,
+                max_tokens=65536,
+            )
+            text = response.choices[0].message.content.strip()
+            text = re.sub(r"```.*?\n?", "", text).strip()
+            print(f"  {label} ... OK ({len(text)}字)")
+            return index, text
+        except Exception as e:
+            print(f"  {label} ... ERROR: {e}")
+            return index, None
+
+
+async def _generate_disease_findings(client, semaphore, dry_run):
+    """疾患の findings_description を一括生成"""
+    diseases = read_jsonl(DISEASES_JSONL)
+    remaining = [(i, d) for i, d in enumerate(diseases) if not d.get("findings_description")]
+    print(f"疾患: {len(diseases)}件中 {len(remaining)}件が未生成")
+
+    if not remaining or dry_run:
+        return
+
+    tasks = [
+        _gen_findings_one(
+            client, semaphore,
+            d["disease_name"], d.get("category", ""),
+            DISEASE_FINDINGS_PROMPT, idx, len(remaining),
+        )
+        for idx, (_, d) in enumerate(remaining)
+    ]
+    results = await asyncio.gather(*tasks)
+    for idx, text in results:
+        if text:
+            orig_idx = remaining[idx][0]
+            diseases[orig_idx]["findings_description"] = text
+    write_jsonl(DISEASES_JSONL, diseases)
+    success = sum(1 for _, t in results if t)
+    print(f"疾患 findings_description: {success}/{len(remaining)}件 生成完了")
+
+
+async def _generate_test_findings(client, semaphore, dry_run):
+    """検査の findings_description を一括生成"""
+    tests = read_jsonl(TESTS_JSONL)
+    remaining = [(i, t) for i, t in enumerate(tests) if not t.get("findings_description")]
+    print(f"検査: {len(tests)}件中 {len(remaining)}件が未生成")
+
+    if not remaining or dry_run:
+        return
+
+    tasks = [
+        _gen_findings_one(
+            client, semaphore,
+            t["test_name"], t.get("category", ""),
+            TEST_FINDINGS_PROMPT, idx, len(remaining),
+        )
+        for idx, (_, t) in enumerate(remaining)
+    ]
+    results = await asyncio.gather(*tasks)
+    for idx, text in results:
+        if text:
+            orig_idx = remaining[idx][0]
+            tests[orig_idx]["findings_description"] = text
+    write_jsonl(TESTS_JSONL, tests)
+    success = sum(1 for _, t in results if t)
+    print(f"検査 findings_description: {success}/{len(remaining)}件 生成完了")
+
+
+async def cmd_findings_desc_async(args):
+    """疾患・検査の findings_description を並行生成（同一所見空間）"""
+    client = AsyncOpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
+    semaphore = asyncio.Semaphore(args.concurrency)
+
+    target = args.target
+    coros = []
+    if target in ("diseases", "all"):
+        coros.append(_generate_disease_findings(client, semaphore, args.dry_run))
+    if target in ("tests", "all"):
+        coros.append(_generate_test_findings(client, semaphore, args.dry_run))
+
+    # 疾患と検査を同時並行で生成
+    await asyncio.gather(*coros)
+
+
+# ----------------------------------------------------------------
 # メインエントリポイント
 # ----------------------------------------------------------------
 
@@ -556,6 +712,14 @@ def main():
     p_findings.add_argument("--concurrency", type=int, default=MAX_CONCURRENCY,
                             help=f"最大並行数（デフォルト: {MAX_CONCURRENCY}）")
 
+    p_fdesc = subparsers.add_parser("findings-desc", help="所見ベースdescription生成（疾患・検査）")
+    p_fdesc.add_argument("--target", choices=["diseases", "tests", "all"], default="all",
+                         help="生成対象（デフォルト: all）")
+    p_fdesc.add_argument("--dry-run", action="store_true",
+                         help="生成対象を表示するだけで実行しない")
+    p_fdesc.add_argument("--concurrency", type=int, default=50,
+                         help="最大並行数（デフォルト: 50）")
+
     args = parser.parse_args()
 
     if args.command == "diseases":
@@ -564,6 +728,8 @@ def main():
         asyncio.run(cmd_tests_async(args))
     elif args.command == "findings":
         asyncio.run(cmd_findings_async(args))
+    elif args.command == "findings-desc":
+        asyncio.run(cmd_findings_desc_async(args))
     else:
         parser.print_help()
 
