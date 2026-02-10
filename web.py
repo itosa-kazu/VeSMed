@@ -64,7 +64,7 @@ def analyze_patient(patient_text, state):
         "history": [],
     }
 
-    status = f"初回分析完了 / 候補{len(candidates)}疾患 / 推薦検査{len(ranked_tests)}件 / 既実施{len(done_tests)}件除外"
+    status = f"初回分析完了 / 全{len(candidates)}疾患で計算 / 推薦検査{len(ranked_tests)}件 / 既実施{len(done_tests)}件除外"
 
     return (
         status,

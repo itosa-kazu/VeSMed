@@ -16,7 +16,7 @@ from config import (
     LLM_FALLBACK_API_KEY, LLM_FALLBACK_BASE_URL, LLM_FALLBACK_MODEL,
     LLM_MAX_RETRIES,
     EMBEDDING_API_KEY, EMBEDDING_BASE_URL, EMBEDDING_MODEL,
-    TAU, TOP_K_DISEASES, TOP_K_TESTS,
+    TAU,
     DISEASES_JSONL, FINDINGS_JSONL, CHROMA_DIR, DATA_DIR,
 )
 
@@ -448,17 +448,18 @@ class VeSMedEngine:
     # ----------------------------------------------------------------
     # Step 2: ベクトル検索 → 候補疾患
     # ----------------------------------------------------------------
-    def _embed_and_search(self, text: str, top_k: int) -> list:
-        """単一テキストでChromaDB検索。内部用。"""
+    def _embed_and_search(self, text: str) -> list:
+        """単一テキストでChromaDB全件検索。内部用。"""
         resp = self.embed_client.embeddings.create(
             model=EMBEDDING_MODEL,
             input=[text],
         )
         query_embedding = resp.data[0].embedding
 
+        n_total = self.collection.count()
         results = self.collection.query(
             query_embeddings=[query_embedding],
-            n_results=top_k,
+            n_results=n_total,
         )
 
         candidates = []
@@ -475,23 +476,19 @@ class VeSMedEngine:
                 })
         return candidates
 
-    def search_diseases(self, rewritten_text: str, original_text: str = None, top_k: int = None) -> list:
+    def search_diseases(self, rewritten_text: str, original_text: str = None) -> list:
         """
-        デュアル検索: 書き換え文と原文の両方で検索し、結果をマージ。
-        各疾患は高い方の類似度を採用。クエリ書き換え失敗時のロバスト性を確保。
+        全疾患検索: 書き換え文と原文の両方で検索し、結果をマージ。
+        各疾患は高い方の類似度を採用。top-k制限なし（全疾患を返す）。
 
         返り値: [{"disease_name": str, "similarity": float, "category": str}, ...]
         """
-        if top_k is None:
-            top_k = TOP_K_DISEASES
-
-        # 書き換え文で検索（多めに取得してマージ）
-        pool_k = top_k * 2
-        candidates_rewritten = self._embed_and_search(rewritten_text, pool_k)
+        # 書き換え文で全件検索
+        candidates_rewritten = self._embed_and_search(rewritten_text)
 
         # 原文でも検索してマージ
         if original_text and original_text.strip() != rewritten_text.strip():
-            candidates_original = self._embed_and_search(original_text, pool_k)
+            candidates_original = self._embed_and_search(original_text)
         else:
             candidates_original = []
 
@@ -502,9 +499,9 @@ class VeSMedEngine:
             if name not in merged or c["similarity"] > merged[name]["similarity"]:
                 merged[name] = c
 
-        # 類似度降順でソートし、top_kに絞る
+        # 類似度降順でソート（全疾患を返す）
         result = sorted(merged.values(), key=lambda x: x["similarity"], reverse=True)
-        return result[:top_k]
+        return result
 
     # ----------------------------------------------------------------
     # Step 3: Softmax → 先験確率
@@ -514,8 +511,8 @@ class VeSMedEngine:
         候補疾患の類似度スコアをsoftmaxで先験確率に変換。
         candidatesに"prior"フィールドを追加して返す。
 
-        cosine類似度は狭い範囲(例: 0.30-0.33)に集中するため、
-        min-max正規化で[0,1]に拡大してからsoftmaxを適用する。
+        生のcosine類似度にsoftmax(τ=1)を直接適用。
+        正規化なし = embeddingの距離をそのまま信じる。
         """
         if tau is None:
             tau = TAU
@@ -525,15 +522,7 @@ class VeSMedEngine:
 
         sims = np.array([c["similarity"] for c in candidates])
 
-        # Min-max正規化: cosine類似度の微小差を [0, 1] に増幅
-        sim_min = sims.min()
-        sim_max = sims.max()
-        if sim_max - sim_min > 1e-9:
-            sims = (sims - sim_min) / (sim_max - sim_min)
-        else:
-            sims = np.ones_like(sims)
-
-        # softmax with temperature
+        # softmax with temperature（正規化なし、生のcosine類似度を直接使用）
         exp_vals = np.exp(sims / tau)
         priors = exp_vals / exp_vals.sum()
 

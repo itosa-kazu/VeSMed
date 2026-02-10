@@ -23,7 +23,6 @@ LLM_MAX_RETRIES = 2  # プライマリAPIのリトライ回数
 
 # パラメータ
 TAU = 1.0
-TOP_K_DISEASES = 10
 TOP_K_TESTS = 10
 
 # パス
