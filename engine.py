@@ -7,6 +7,7 @@ import json
 import math
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import chromadb
 from openai import OpenAI
@@ -143,8 +144,9 @@ class VeSMedEngine:
     # ----------------------------------------------------------------
     def _compute_test_embed_costs(self):
         """
-        検査名をembedしてコストアンカーとの余弦類似度から侵襲度/コストを推定。
-        cost = exp(cos_sim(test_name, anchor))
+        検査の手技記述（またはフォールバックとして検査名）をembedし
+        コストアンカーとの余弦類似度から侵襲度/コストを推定。
+        cost = exp(cos_sim(test_description, anchor))
         結果はJSONファイルにキャッシュし、次回起動時はロードのみ。
         """
         cache_file = os.path.join(DATA_DIR, "test_embed_cost.json")
@@ -169,37 +171,77 @@ class VeSMedEngine:
         else:
             cached = {}
 
+        # tests.jsonlから手技記述を読み込み（検査名→記述のマップ）
+        tests_jsonl = os.path.join(DATA_DIR, "tests.jsonl")
+        test_descriptions = {}
+        if os.path.exists(tests_jsonl):
+            with open(tests_jsonl, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        td = json.loads(line)
+                        desc = td.get("description_for_embedding", "")
+                        if desc:
+                            test_descriptions[td["test_name"]] = desc
+                    except (json.JSONDecodeError, KeyError):
+                        continue
+            print(f"[コスト] {len(test_descriptions)}件の検査手技記述を読込")
+
         # アンカーテキスト
         anchor_text = "大規模な設備・専門スタッフ・入院を要し、患者への身体的負担と合併症リスクが大きい高額で侵襲的な検査手技"
 
-        # アンカー + 全検査名をembedding（リトライ付き）
+        # embedするテキスト: 記述があれば記述、なければ検査名
         test_list = sorted(all_test_names)
-        all_texts = [anchor_text] + test_list
-        all_embs = []
+        embed_texts = []
+        for tname in test_list:
+            desc = test_descriptions.get(tname, "")
+            embed_texts.append(desc if desc else tname)
+        all_texts = [anchor_text] + embed_texts
 
-        batch_size = 50  # 検査名は短いので大きめバッチ
-        total_batches = (len(all_texts) + batch_size - 1) // batch_size
-        for batch_idx, start in enumerate(range(0, len(all_texts), batch_size)):
-            batch = all_texts[start:start + batch_size]
-            success = False
+        # バッチに分割して並行embedding（ChromaDB不使用、キャッシュJSONのみ書込）
+        batch_size = 50
+        batches = []
+        for i in range(0, len(all_texts), batch_size):
+            batches.append((i, all_texts[i:i + batch_size]))
+        total_batches = len(batches)
+        all_embs = [None] * len(all_texts)
+
+        def _embed_batch(batch_info):
+            start_idx, batch = batch_info
             for attempt in range(3):
                 try:
                     resp = self.embed_client.embeddings.create(
                         model=EMBEDDING_MODEL,
                         input=batch,
                     )
-                    for item in resp.data:
-                        all_embs.append(np.array(item.embedding))
-                    success = True
-                    break
+                    return start_idx, [np.array(item.embedding) for item in resp.data]
                 except Exception as e:
-                    print(f"[コスト] batch {batch_idx+1}/{total_batches} 失敗 (試行{attempt+1}): {e}")
+                    print(f"[コスト] batch (offset={start_idx}) 失敗 (試行{attempt+1}): {e}")
                     time.sleep(2 ** attempt)
-            if not success:
-                print(f"[コスト] batch {batch_idx+1} が3回失敗、中断")
-                return
-            if (batch_idx + 1) % 5 == 0 or batch_idx == total_batches - 1:
-                print(f"[コスト] embedding {batch_idx+1}/{total_batches} バッチ完了")
+            return start_idx, None
+
+        max_workers = 10
+        print(f"[コスト] {total_batches}バッチを{max_workers}並行でembedding開始")
+        failed = False
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(_embed_batch, b) for b in batches]
+            completed = 0
+            for future in as_completed(futures):
+                start_idx, result = future.result()
+                if result is None:
+                    print(f"[コスト] batch (offset={start_idx}) が3回失敗、中断")
+                    failed = True
+                    break
+                for j, emb in enumerate(result):
+                    all_embs[start_idx + j] = emb
+                completed += 1
+                if completed % 5 == 0 or completed == total_batches:
+                    print(f"[コスト] embedding {completed}/{total_batches} バッチ完了")
+
+        if failed:
+            return
 
         anchor_emb = all_embs[0]
         test_embs = all_embs[1:]
