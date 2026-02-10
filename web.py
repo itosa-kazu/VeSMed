@@ -189,8 +189,8 @@ def format_tests_df(ranked_tests):
             "#": i + 1,
             "検査名": t["test_name"],
             "効用": f"{t['utility']:.4f}",
-            "情報利得": f"{t['info_gain']:.4f}",
-            "コスト": f"{t['embed_cost']:.2f}",
+            "分散": f"{t['score']:.4f}",
+            "質": f"{t['quality']:.4f}",
             "関連疾患": related,
         })
     return pd.DataFrame(rows)

@@ -564,6 +564,48 @@ TEST_FINDINGS_PROMPT = """\
 トロポニン上昇：心筋壊死を示唆。著明上昇（基準値の100倍以上）は急性心筋梗塞に特徴的（STEMI/NSTEMI）。中等度上昇（10-100倍）は急性心筋炎、たこつぼ心筋症、肺塞栓症（右室負荷）。軽度上昇（1-10倍）は慢性心不全、腎不全（クリアランス低下）、敗血症（需要虚血）、心房細動（頻脈性）、心臓手術後、激しい運動後。トロポニン正常：発症6時間以降であれば心筋壊死をほぼ否定（陰性的中率99%以上）。ただし超急性期（発症3時間以内）は偽陰性あり、6-12時間後の再検が必要。高感度トロポニンでは慢性腎不全で持続的軽度上昇（偽陽性）。経時的変化（rise and fall パターン）が急性心筋障害の診断に重要。"""
 
 
+TEST_QUALITY_PROMPT = """\
+あなたは日本の臨床医学に精通した専門家です。
+与えられた検査について、その検査の「総合的な質」を評価するための記述を生成してください。
+
+## ルール
+- 出力はプレーンテキストのみ（JSON不要、マークダウン不要、コードブロック不要）
+- 以下の6つの観点すべてについて、具体的な事実を詳細に記述すること：
+
+### 1. 実施方法と身体的負担
+- どのように実施するか（採血のみ？カテーテル挿入？全身麻酔？）
+- 患者が受ける苦痛の程度（穿刺痛のみ？術中疼痛？術後疼痛？）
+- 必要な体位・拘束時間
+- 前処置の要否（絶食、下剤、造影剤等）
+
+### 2. 合併症リスク
+- 起こりうる合併症とその頻度・重症度
+- 死亡リスクの有無
+- 禁忌事項
+
+### 3. 所要時間
+- 検査自体の所要時間
+- 結果が判明するまでの時間（即日？数日？数週間？）
+- 予約の要否、待機時間
+
+### 4. 金銭的コスト
+- おおよその保険点数または費用感（数百円？数千円？数万円？数十万円？）
+- 必要な設備・人員（外来採血室で可能？専用装置が必要？専門チームが必要？）
+
+### 5. 致命的疾患の検出能力（Critical value）
+- この検査で発見・除外できる致命的疾患（見逃すと死亡する疾患）を具体的に列挙
+- 各疾患に対する診断精度（高い？中程度？スクリーニング程度？）
+- 緊急性の高い疾患の早期発見にどの程度貢献するか
+
+### 6. 治療方針への貢献（Curable value）
+- この検査結果が治療方針をどう変えるか（抗菌薬選択？手術適応？化学療法レジメン？）
+- 治療効果のモニタリングに使えるか
+- 結果によって予後がどの程度改善するか
+
+## 出力例（トロポニンI/T）
+末梢静脈から採血のみで実施可能。穿刺部の軽微な疼痛以外に身体的負担なし。前処置不要、外来採血室で看護師が実施可能。合併症は穿刺部の皮下出血程度で重篤な合併症リスクはない。高感度トロポニンは院内検査で15-30分、通常法でも1時間以内に結果判明。保険点数は約120点（約360円）、一般的な自動分析装置で測定可能。急性心筋梗塞（STEMI/NSTEMI）の診断に不可欠で、発症6時間以降の陰性的中率は99%以上。急性心筋炎、たこつぼ心筋症、肺塞栓症の鑑別にも寄与。急性大動脈解離のスクリーニングにも補助的に使用。陽性の場合、緊急心臓カテーテル検査・経皮的冠動脈インターベンション（PCI）の適応判断に直結し、再灌流療法の開始時間が予後を決定する（door-to-balloon time 90分以内が目標）。経時的測定により心筋壊死の範囲推定と治療効果判定が可能。"""
+
+
 def read_jsonl(filepath):
     """JSONLファイルを読み込んでリストで返す"""
     entries = []
@@ -681,6 +723,44 @@ async def cmd_findings_desc_async(args):
 
 
 # ----------------------------------------------------------------
+# 検査quality_description生成（総合的な質の記述）
+# ----------------------------------------------------------------
+
+async def _generate_test_quality(client, semaphore, dry_run):
+    """検査の quality_description を一括生成"""
+    tests = read_jsonl(TESTS_JSONL)
+    remaining = [(i, t) for i, t in enumerate(tests) if not t.get("quality_description")]
+    print(f"検査quality: {len(tests)}件中 {len(remaining)}件が未生成")
+
+    if not remaining or dry_run:
+        return
+
+    tasks = [
+        _gen_findings_one(
+            client, semaphore,
+            t["test_name"], t.get("category", ""),
+            TEST_QUALITY_PROMPT, idx, len(remaining),
+        )
+        for idx, (_, t) in enumerate(remaining)
+    ]
+    results = await asyncio.gather(*tasks)
+    for idx, text in results:
+        if text:
+            orig_idx = remaining[idx][0]
+            tests[orig_idx]["quality_description"] = text
+    write_jsonl(TESTS_JSONL, tests)
+    success = sum(1 for _, t in results if t)
+    print(f"検査 quality_description: {success}/{len(remaining)}件 生成完了")
+
+
+async def cmd_quality_async(args):
+    """検査の quality_description を並行生成"""
+    client = AsyncOpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
+    semaphore = asyncio.Semaphore(args.concurrency)
+    await _generate_test_quality(client, semaphore, args.dry_run)
+
+
+# ----------------------------------------------------------------
 # メインエントリポイント
 # ----------------------------------------------------------------
 
@@ -720,6 +800,12 @@ def main():
     p_fdesc.add_argument("--concurrency", type=int, default=50,
                          help="最大並行数（デフォルト: 50）")
 
+    p_quality = subparsers.add_parser("quality", help="検査quality_description生成")
+    p_quality.add_argument("--dry-run", action="store_true",
+                           help="生成対象を表示するだけで実行しない")
+    p_quality.add_argument("--concurrency", type=int, default=30,
+                           help="最大並行数（デフォルト: 30）")
+
     args = parser.parse_args()
 
     if args.command == "diseases":
@@ -730,6 +816,8 @@ def main():
         asyncio.run(cmd_findings_async(args))
     elif args.command == "findings-desc":
         asyncio.run(cmd_findings_desc_async(args))
+    elif args.command == "quality":
+        asyncio.run(cmd_quality_async(args))
     else:
         parser.print_help()
 

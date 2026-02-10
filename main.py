@@ -37,15 +37,15 @@ def format_candidates(candidates, top_n=10):
 def format_tests(tests, top_n=10):
     """推薦検査を表示用にフォーマット"""
     lines = []
-    lines.append("【推薦検査（効用=情報利得/コスト 順）】")
+    lines.append("【推薦検査（効用=分散×exp(質) 順）】")
     lines.append("-" * 60)
-    lines.append(f"  {'#':>3s}  {'検査名':<25s}  {'情報利得':>8s}  {'コスト':>6s}  {'効用':>8s}")
+    lines.append(f"  {'#':>3s}  {'検査名':<25s}  {'分散':>8s}  {'質':>6s}  {'効用':>8s}")
     lines.append("-" * 60)
     for i, t in enumerate(tests[:top_n]):
         lines.append(
             f"  {i + 1:3d}  {t['test_name']:<25s}  "
-            f"{t['info_gain']:8.4f}  "
-            f"{t['embed_cost']:6.2f}  "
+            f"{t['score']:8.4f}  "
+            f"{t['quality']:6.4f}  "
             f"{t['utility']:8.4f}"
         )
     lines.append("=" * 60)

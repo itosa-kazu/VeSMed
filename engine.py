@@ -94,9 +94,9 @@ class VeSMedEngine:
         self.test_names = []      # col順の検査名リスト
         self._compute_similarity_matrix()
 
-        # 検査コスト（embedding推定）
-        self.test_embed_cost = {}  # test_name → float (exp(cos_invasive))
-        self._compute_test_embed_costs()
+        # 検査の質（embedding推定）
+        self.test_quality = {}  # test_name → float (cos(quality_desc, ideal_anchor))
+        self._compute_test_quality()
 
     # ----------------------------------------------------------------
     # 2Cスコア計算（起動時に1回）
@@ -264,38 +264,19 @@ class VeSMedEngine:
         return np.array(all_embs, dtype=np.float32)
 
     # ----------------------------------------------------------------
-    # 検査コスト推定（embedding、キャッシュ付き）
+    # 検査の質推定（embedding、キャッシュ付き）
     # ----------------------------------------------------------------
-    def _compute_test_embed_costs(self):
+    def _compute_test_quality(self):
         """
-        検査の手技記述（またはフォールバックとして検査名）をembedし
-        コストアンカーとの余弦類似度から侵襲度/コストを推定。
-        cost = exp(cos_sim(test_description, anchor))
+        検査の quality_description をembedし、理想検査アンカーとの
+        余弦類似度から質スコアを推定。
+        quality = cos_sim(quality_description, ideal_anchor)
+        utility計算時に exp(quality) を乗じる。
         結果はJSONファイルにキャッシュし、次回起動時はロードのみ。
         """
-        cache_file = os.path.join(DATA_DIR, "test_embed_cost.json")
+        cache_file = os.path.join(DATA_DIR, "test_quality.json")
 
-        # 全検査名を収集（名寄せ後）
-        all_test_names = set()
-        for d in self.disease_db.values():
-            for t in d.get("relevant_tests", []):
-                tname = self.test_name_map.get(t["test_name"], t["test_name"])
-                all_test_names.add(tname)
-
-        # キャッシュが存在し、全検査名をカバーしていればロード
-        if os.path.exists(cache_file):
-            with open(cache_file, "r", encoding="utf-8") as f:
-                cached = json.load(f)
-            missing = all_test_names - set(cached.keys())
-            if not missing:
-                self.test_embed_cost = {k: float(v) for k, v in cached.items()}
-                print(f"[コスト] キャッシュから{len(self.test_embed_cost)}検査のコスト読込")
-                return
-            print(f"[コスト] キャッシュに{len(missing)}件の未計算検査あり、再計算")
-        else:
-            cached = {}
-
-        # tests.jsonlから手技記述を読み込み（検査名→記述のマップ）
+        # tests.jsonlからquality_descriptionを読み込み
         tests_jsonl = os.path.join(DATA_DIR, "tests.jsonl")
         test_descriptions = {}
         if os.path.exists(tests_jsonl):
@@ -306,25 +287,47 @@ class VeSMedEngine:
                         continue
                     try:
                         td = json.loads(line)
-                        desc = td.get("description_for_embedding", "")
+                        desc = td.get("quality_description", "")
                         if desc:
                             test_descriptions[td["test_name"]] = desc
                     except (json.JSONDecodeError, KeyError):
                         continue
-            print(f"[コスト] {len(test_descriptions)}件の検査手技記述を読込")
+            print(f"[質] {len(test_descriptions)}件のquality_description読込")
 
-        # アンカーテキスト
-        anchor_text = "大規模な設備・専門スタッフ・入院を要し、患者への身体的負担と合併症リスクが大きい高額で侵襲的な検査手技"
+        # 全検査名を収集
+        all_test_names = sorted(set(self.test_names))
 
-        # embedするテキスト: 記述があれば記述、なければ検査名
-        test_list = sorted(all_test_names)
+        # キャッシュが存在し、全検査名をカバーしていればロード
+        if os.path.exists(cache_file):
+            with open(cache_file, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            missing = set(all_test_names) - set(cached.keys())
+            if not missing:
+                self.test_quality = {k: float(v) for k, v in cached.items()}
+                print(f"[質] キャッシュから{len(self.test_quality)}検査の質スコア読込")
+                return
+            print(f"[質] キャッシュに{len(missing)}件の未計算検査あり、再計算")
+
+        # 理想検査アンカー
+        anchor_text = (
+            "末梢静脈からの採血のみで実施可能な非侵襲的検査。穿刺部の軽微な疼痛以外に"
+            "身体的負担なし。前処置不要、外来採血室で数分以内に完了。合併症リスクなし。"
+            "保険点数100点未満の安価な検査。院内検査で15分以内に結果判明。"
+            "急性心筋梗塞、敗血症、肺塞栓症、大動脈解離など見逃すと死亡する致命的疾患を"
+            "高い感度で検出可能。陽性結果は緊急治療（PCI、抗菌薬、手術）の開始に直結し、"
+            "陰性結果は致命的疾患を高い確度で除外できる。治療効果のモニタリングにも使用可能で、"
+            "結果に基づく早期介入により予後が大幅に改善する。"
+        )
+
+        # embedするテキスト: quality_descriptionがあれば使用、なければ検査名
+        test_list = all_test_names
         embed_texts = []
         for tname in test_list:
             desc = test_descriptions.get(tname, "")
             embed_texts.append(desc if desc else tname)
         all_texts = [anchor_text] + embed_texts
 
-        # バッチに分割して並行embedding（ChromaDB不使用、キャッシュJSONのみ書込）
+        # バッチに分割して並行embedding
         batch_size = 50
         batches = []
         for i in range(0, len(all_texts), batch_size):
@@ -342,12 +345,12 @@ class VeSMedEngine:
                     )
                     return start_idx, [np.array(item.embedding) for item in resp.data]
                 except Exception as e:
-                    print(f"[コスト] batch (offset={start_idx}) 失敗 (試行{attempt+1}): {e}")
+                    print(f"[質] batch (offset={start_idx}) 失敗 (試行{attempt+1}): {e}")
                     time.sleep(2 ** attempt)
             return start_idx, None
 
         max_workers = 10
-        print(f"[コスト] {total_batches}バッチを{max_workers}並行でembedding開始")
+        print(f"[質] {total_batches}バッチを{max_workers}並行でembedding開始")
         failed = False
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(_embed_batch, b) for b in batches]
@@ -355,14 +358,14 @@ class VeSMedEngine:
             for future in as_completed(futures):
                 start_idx, result = future.result()
                 if result is None:
-                    print(f"[コスト] batch (offset={start_idx}) が3回失敗、中断")
+                    print(f"[質] batch (offset={start_idx}) が3回失敗、中断")
                     failed = True
                     break
                 for j, emb in enumerate(result):
                     all_embs[start_idx + j] = emb
                 completed += 1
                 if completed % 5 == 0 or completed == total_batches:
-                    print(f"[コスト] embedding {completed}/{total_batches} バッチ完了")
+                    print(f"[質] embedding {completed}/{total_batches} バッチ完了")
 
         if failed:
             return
@@ -378,13 +381,13 @@ class VeSMedEngine:
 
         for i, tname in enumerate(test_list):
             sim = cosine_sim(test_embs[i], anchor_emb)
-            self.test_embed_cost[tname] = math.exp(sim)
+            self.test_quality[tname] = sim
 
         # キャッシュに保存
         with open(cache_file, "w", encoding="utf-8") as f:
-            json.dump(self.test_embed_cost, f, ensure_ascii=False, indent=1)
+            json.dump(self.test_quality, f, ensure_ascii=False, indent=1)
 
-        print(f"[コスト] {len(self.test_embed_cost)}検査のembeddingコスト計算完了")
+        print(f"[質] {len(self.test_quality)}検査の質スコア計算完了")
 
     # ----------------------------------------------------------------
     # LLM呼び出し（リトライ + フォールバック）
@@ -655,9 +658,9 @@ class VeSMedEngine:
         分散が大きい = 疾患間でバラつく = 鑑別に有用な検査。
 
         score = Var_prior(cos(D_i, T_j)) × 2C臨床重み
-        utility = score / embed_cost
+        utility = score * exp(quality)
 
-        返り値: [{"test_name": str, "score": float, "embed_cost": float,
+        返り値: [{"test_name": str, "score": float, "quality": float,
                   "utility": float}, ...]
         """
         if done_tests is None:
@@ -703,14 +706,14 @@ class VeSMedEngine:
                 continue
 
             score = float(var[j])
-            embed_cost = self.test_embed_cost.get(tname, math.exp(0.5))
-            utility = score / embed_cost
+            quality = self.test_quality.get(tname, 0.5)
+            utility = score * math.exp(quality)
 
             tdata = self.test_db.get(tname, {})
             ranked.append({
                 "test_name": tname,
                 "score": round(score, 6),
-                "embed_cost": round(embed_cost, 2),
+                "quality": round(quality, 4),
                 "turnaround_minutes": tdata.get("turnaround_minutes", 60),
                 "utility": round(utility, 6),
             })
