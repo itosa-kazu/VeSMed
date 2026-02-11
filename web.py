@@ -45,18 +45,18 @@ def analyze_patient(patient_text):
 
     candidates = eng.compute_priors(candidates)
 
-    # 既実施検査検出（embedding類似度ベース、LLM不要）
-    done_tests = eng.detect_done_tests(patient_text)
+    # novelty計算（行単位embedding → 既知情報を連続的に割引）
+    novelty = eng.compute_novelty(patient_text)
     t2 = _time.time()
-    print(f"[TIMING] detect_done_tests: {t2-t1:.1f}s")
+    print(f"[TIMING] compute_novelty: {t2-t1:.1f}s")
 
-    ranked_tests = eng.rank_tests(candidates, done_tests=done_tests)
-    critical_tests = eng.rank_tests_critical(candidates, done_tests=done_tests)
+    ranked_tests = eng.rank_tests(candidates, novelty=novelty)
+    critical_tests = eng.rank_tests_critical(candidates, novelty=novelty)
     t3 = _time.time()
     print(f"[TIMING] rank_tests+critical: {t3-t2:.1f}s")
     print(f"[TIMING] === TOTAL: {t3-t0:.1f}s ===")
 
-    status = f"分析完了 / 全{len(candidates)}疾患で計算 / 推薦検査{len(ranked_tests)}件 / 既実施{len(done_tests)}件除外"
+    status = f"分析完了 / 全{len(candidates)}疾患で計算 / 推薦検査{len(ranked_tests)}件"
 
     return (
         status,
@@ -105,7 +105,7 @@ def format_tests_df(ranked_tests):
             "検査名": t["test_name"],
             "効用": f"{t['utility']:.4f}",
             "分散": f"{t['score']:.4f}",
-            "質": f"{t['quality']:.4f}",
+            "新規": f"{t.get('novelty', 1.0):.2f}",
             "関連疾患": related,
         })
     return pd.DataFrame(rows)
@@ -119,6 +119,7 @@ def format_critical_df(critical_tests):
             "検査名": t["test_name"],
             "効用": f"{t['utility']:.4f}",
             "命中": f"{t['critical_hit']:.4f}",
+            "新規": f"{t.get('novelty', 1.0):.2f}",
             "排除対象": t.get("hit_disease", ""),
         })
     return pd.DataFrame(rows)
@@ -164,13 +165,13 @@ with gr.Blocks(
         with gr.Column(scale=1):
             test_table = gr.Dataframe(
                 label="Part A: 鑑別推奨（分散ベース）",
-                headers=["#", "検査名", "効用", "分散", "質", "関連疾患"],
+                headers=["#", "検査名", "効用", "分散", "新規", "関連疾患"],
                 interactive=False,
             )
         with gr.Column(scale=1):
             critical_table = gr.Dataframe(
                 label="Part B: Critical排除推奨（最大命中）",
-                headers=["#", "検査名", "効用", "命中", "排除対象"],
+                headers=["#", "検査名", "効用", "命中", "新規", "排除対象"],
                 interactive=False,
             )
 

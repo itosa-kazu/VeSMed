@@ -101,9 +101,9 @@ class VeSMedEngine:
         self.risk_embs = {}  # test_name → np.array (4096,)
         self._compute_risk_embeddings()
 
-        # 検査名embedding（done_tests検出用）: test_name → normalized np.array
-        self.test_name_embs = {}
-        self._compute_test_name_embeddings()
+        # 検査findings embedding（novelty計算用）: 正規化済み (N_tests, dim)
+        self.test_findings_embs = None
+        self._load_test_findings_embs()
 
         # 最後のクエリembedding（rank_testsでrisk_relevance計算に使用）
         self._last_query_embedding = None
@@ -222,6 +222,9 @@ class VeSMedEngine:
             cached_tests = list(data["test_names"])
             if cached_diseases == disease_names and cached_tests == self.test_names:
                 self.sim_matrix = data["sim_matrix"]
+                # test_findings_embsもキャッシュから読み込み（存在すれば）
+                if "test_findings_embs" in data:
+                    self._cached_test_findings_embs = data["test_findings_embs"]
                 print(f"[類似度行列] キャッシュから読込 {self.sim_matrix.shape}")
                 return
 
@@ -241,12 +244,14 @@ class VeSMedEngine:
         t_norms[t_norms == 0] = 1.0
         test_embs_normed = test_embs / t_norms
 
-        self.sim_matrix = disease_embs_normed @ test_embs_normed.T  # (386, 329)
+        self.sim_matrix = disease_embs_normed @ test_embs_normed.T
+        self._cached_test_findings_embs = test_embs_normed  # novelty計算用に保持
 
-        # キャッシュ保存
+        # キャッシュ保存（test_findings_embsも含む）
         np.savez(
             cache_file,
             sim_matrix=self.sim_matrix,
+            test_findings_embs=test_embs_normed,
             disease_names=np.array(disease_names, dtype=object),
             test_names=np.array(self.test_names, dtype=object),
         )
@@ -490,47 +495,18 @@ class VeSMedEngine:
         print(f"[Risk] {len(self.risk_embs)}検査のリスクembedding計算・キャッシュ完了")
 
     # ----------------------------------------------------------------
-    # 検査名embedding計算（done_tests検出用、起動時に1回）
+    # 検査findings embedding読込（novelty計算用）
     # ----------------------------------------------------------------
-    def _compute_test_name_embeddings(self):
+    def _load_test_findings_embs(self):
         """
-        全検査名をembeddingし、患者テキストとのcos類似度で
-        既実施検査を検出するために使う。キャッシュあり。
+        sim_matrix構築時に計算されたtest findings embeddingを
+        novelty計算用に (N_tests, dim) ndarray として保持する。
         """
-        cache_file = os.path.join(DATA_DIR, "test_name_embs.npz")
-        all_names = sorted(self.test_db.keys())
-        if not all_names:
-            return
-
-        # キャッシュチェック
-        if os.path.exists(cache_file):
-            data = np.load(cache_file, allow_pickle=True)
-            cached_names = list(data["test_names"])
-            if cached_names == all_names:
-                for i, name in enumerate(all_names):
-                    self.test_name_embs[name] = data["embeddings"][i]
-                print(f"[TestNameEmb] キャッシュから{len(self.test_name_embs)}件読込")
-                return
-
-        # embedding計算
-        embs = self._batch_embed(all_names)
-        if embs is None:
-            print("[TestNameEmb] embedding失敗")
-            return
-
-        norms = np.linalg.norm(embs, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        embs_normed = embs / norms
-
-        for i, name in enumerate(all_names):
-            self.test_name_embs[name] = embs_normed[i]
-
-        np.savez(
-            cache_file,
-            embeddings=embs_normed,
-            test_names=np.array(all_names, dtype=object),
-        )
-        print(f"[TestNameEmb] {len(self.test_name_embs)}件のembedding計算・キャッシュ完了")
+        if hasattr(self, '_cached_test_findings_embs') and self._cached_test_findings_embs is not None:
+            self.test_findings_embs = self._cached_test_findings_embs
+            print(f"[TestFindingsEmb] {self.test_findings_embs.shape[0]}件読込")
+        else:
+            print("[TestFindingsEmb] なし（sim_matrixキャッシュ更新が必要）")
 
     # ----------------------------------------------------------------
     # LLM呼び出し（リトライ + フォールバック）
@@ -566,36 +542,47 @@ class VeSMedEngine:
             raise RuntimeError(f"全APIが失敗しました: {e}")
 
     # ----------------------------------------------------------------
-    # Step 1: クエリ整理（患者情報 → 標準化医学テキスト）
+    # Step 1: Novelty計算（患者テキストに既に含まれる情報を連続的に割引）
     # ----------------------------------------------------------------
-    def detect_done_tests(self, patient_text: str, threshold: float = 0.5) -> list:
+    def compute_novelty(self, patient_text: str) -> np.ndarray:
         """
-        患者テキストをembeddingし、全検査名embeddingとのcos類似度で
-        テキスト中に言及されている検査を検出する。LLM不要。
+        患者テキストを行単位で分割・embeddingし、各検査のfindings_description
+        embeddingとのmax cos類似度から新規性スコアを計算する。
 
-        返り値: 検出された検査名リスト ["白血球数", "CRP", ...]
+        novelty_j = 1 - max_line cos(line_emb, test_findings_emb_j)
+
+        返り値: (N_tests,) ndarray, 各検査の新規性スコア (0〜1)
+        閾値なし、二値判定なし。全てembeddingから連続的に導出。
         """
-        if not self.test_name_embs:
-            return []
+        n_tests = len(self.test_names)
+        if self.test_findings_embs is None or n_tests == 0:
+            return np.ones(n_tests)
 
-        # 患者テキストをembed（_last_query_embeddingとは別：こちらは検査名マッチ用）
+        # 患者テキストを行単位で分割（空行除外）
+        lines = [l.strip() for l in patient_text.split('\n') if l.strip()]
+        if not lines:
+            return np.ones(n_tests)
+
+        # 全行を一括embed
         resp = self.embed_client.embeddings.create(
             model=EMBEDDING_MODEL,
-            input=[patient_text],
+            input=lines,
         )
-        pt_emb = np.array(resp.data[0].embedding, dtype=np.float32)
-        pt_norm = np.linalg.norm(pt_emb)
-        if pt_norm == 0:
-            return []
-        pt_emb = pt_emb / pt_norm
+        line_embs = np.array([d.embedding for d in resp.data], dtype=np.float32)
+        l_norms = np.linalg.norm(line_embs, axis=1, keepdims=True)
+        l_norms[l_norms == 0] = 1.0
+        line_embs = line_embs / l_norms
 
-        # 全検査名とのcos類似度
-        done = []
-        for tname, temb in self.test_name_embs.items():
-            sim = float(np.dot(pt_emb, temb))
-            if sim >= threshold:
-                done.append(tname)
-        return done
+        # (N_lines, N_tests) = line_embs @ test_findings_embs.T
+        sims = line_embs @ self.test_findings_embs.T
+
+        # 各検査について全行のmax → 最も関連の深い行との類似度
+        max_sims = sims.max(axis=0)  # (N_tests,)
+
+        # novelty = 1 - max_sim（既に情報があるほどutilityを下げる）
+        novelty = 1.0 - np.clip(max_sims, 0.0, 1.0)
+
+        return novelty
 
     # ----------------------------------------------------------------
     # Step 2: ベクトル検索 → 候補疾患
@@ -656,23 +643,22 @@ class VeSMedEngine:
     # ----------------------------------------------------------------
     # Step 4: 検査ランキング（prior加重分散）
     # ----------------------------------------------------------------
-    def rank_tests(self, candidates: list, done_tests: list = None) -> list:
+    def rank_tests(self, candidates: list, novelty: np.ndarray = None) -> list:
         """
         各検査について、疑い疾患群に対するcos類似度のprior加重分散を計算。
         分散が大きい = 疾患間でバラつく = 鑑別に有用な検査。
 
-        score = Var_prior(cos(D_i, T_j)) × 2C臨床重み
-        utility = score * exp(quality_axis_projection)
+        utility = variance × exp(quality) × novelty × (1 - risk_relevance)
 
-        返り値: [{"test_name": str, "score": float, "quality": float,
-                  "utility": float}, ...]
+        novelty: compute_novelty()の返り値。患者テキストに既に含まれる情報を
+        連続的に割引する。閾値なし、二値判定なし。
         """
-        if done_tests is None:
-            done_tests = []
-        done_set = set(self.test_name_map.get(t, t) for t in done_tests)
-
         if self.sim_matrix is None or len(self.test_names) == 0:
             return []
+
+        n_tests = len(self.test_names)
+        if novelty is None:
+            novelty = np.ones(n_tests)
 
         # 候補疾患の生cos類似度と2C重みを配列化
         raw_sims = np.array([c.get("similarity", 0.0) for c in candidates], dtype=float)
@@ -695,11 +681,10 @@ class VeSMedEngine:
         disease_rows = np.array(disease_rows)
 
         valid_mask = disease_rows >= 0
-        sim_sub = np.zeros((len(candidates), len(self.test_names)))
+        sim_sub = np.zeros((len(candidates), n_tests))
         sim_sub[valid_mask] = self.sim_matrix[disease_rows[valid_mask]]
 
         # prior加重分散を一括計算: Var_w = Σ w_i (x_i - μ)^2
-        # μ = Σ w_i * x_i  (N_tests,)
         w_col = w[:, np.newaxis]  # (N_candidates, 1)
         mu = (w_col * sim_sub).sum(axis=0)  # (N_tests,)
         var = (w_col * (sim_sub - mu) ** 2).sum(axis=0)  # (N_tests,)
@@ -714,13 +699,11 @@ class VeSMedEngine:
 
         ranked = []
         for j, tname in enumerate(self.test_names):
-            if tname in done_set:
-                continue
-
             score = float(var[j])
             q = self.test_quality.get(tname, {"axis": 0.0})
             axis_proj = q["axis"]
-            utility = score * math.exp(axis_proj)
+            nov = float(novelty[j])
+            utility = score * math.exp(axis_proj) * nov
 
             # risk_relevance: 侵襲的検査のリスクが患者状態と関連する場合にutilityを低下
             risk_rel = 0.0
@@ -733,6 +716,7 @@ class VeSMedEngine:
                 "test_name": tname,
                 "score": round(score, 6),
                 "quality": round(axis_proj, 4),
+                "novelty": round(nov, 4),
                 "risk_relevance": round(risk_rel, 4),
                 "turnaround_minutes": tdata.get("turnaround_minutes", 60),
                 "utility": round(utility, 6),
@@ -741,20 +725,21 @@ class VeSMedEngine:
         ranked.sort(key=lambda x: x["utility"], reverse=True)
         return ranked
 
-    def rank_tests_critical(self, candidates: list, done_tests: list = None) -> list:
+    def rank_tests_critical(self, candidates: list, novelty: np.ndarray = None) -> list:
         """
         Part B: Critical Hit — 致命疾患排除ランキング。
         critical_hit_j = max_i [ exp(cos_critical_i) * similarity_i * sim_matrix[i][j] ]
 
         分散ではなく最大命中: 「見逃したら死ぬ疾患を排除できる検査」を上位に。
-        softmax廃止: 生のcosine類似度を直接使用。
+        noveltyで既知情報を連続的に割引。
         """
-        if done_tests is None:
-            done_tests = []
-        done_set = set(self.test_name_map.get(t, t) for t in done_tests)
 
         if self.sim_matrix is None or len(self.test_names) == 0:
             return []
+
+        n_tests = len(self.test_names)
+        if novelty is None:
+            novelty = np.ones(n_tests)
 
         # critical_weight = exp(cos_critical) （curable除外、critical成分のみ）
         critical_w = np.array([
@@ -776,7 +761,7 @@ class VeSMedEngine:
         disease_rows = np.array(disease_rows)
 
         valid_mask = disease_rows >= 0
-        sim_sub = np.zeros((len(candidates), len(self.test_names)))
+        sim_sub = np.zeros((len(candidates), n_tests))
         sim_sub[valid_mask] = self.sim_matrix[disease_rows[valid_mask]]
 
         # weighted_sim = cp[:, None] * sim_sub → (N_candidates, N_tests)
@@ -796,13 +781,11 @@ class VeSMedEngine:
 
         ranked = []
         for j, tname in enumerate(self.test_names):
-            if tname in done_set:
-                continue
-
             ch = float(critical_scores[j])
             q = self.test_quality.get(tname, {"axis": 0.0})
             axis_proj = q["axis"]
-            utility = ch * math.exp(axis_proj)
+            nov = float(novelty[j])
+            utility = ch * math.exp(axis_proj) * nov
 
             # risk_relevance
             risk_rel = 0.0
@@ -818,6 +801,7 @@ class VeSMedEngine:
                 "test_name": tname,
                 "critical_hit": round(ch, 6),
                 "quality": round(axis_proj, 4),
+                "novelty": round(nov, 4),
                 "utility": round(utility, 6),
                 "hit_disease": hit_disease,
             })

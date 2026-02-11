@@ -135,15 +135,12 @@ def main():
         print()
         print(format_candidates(candidates))
 
-        # Step 4: 検査ランキング
+        # Step 4: novelty計算 + 検査ランキング
         print("情報利得計算中...")
-        ranked_tests = engine.rank_tests(candidates, done_tests=done_tests)
+        novelty = engine.compute_novelty(patient_text)
+        ranked_tests = engine.rank_tests(candidates, novelty=novelty)
 
         print(format_tests(ranked_tests, top_n=TOP_K_TESTS))
-
-        if done_tests:
-            print(f"  実施済み検査: {', '.join(done_tests)}")
-            print()
 
 
 # config からインポート
