@@ -181,7 +181,7 @@ def format_diseases_df(candidates):
         rows.append({
             "#": i + 1,
             "疾患名": c["disease_name"],
-            "確率": f"{c.get('prior', 0):.1%}",
+            "類似度": f"{c.get('similarity', 0):.3f}",
             "重み": f"{c.get('clinical_weight', 0):.2f}",
             "緊急度": f"{urgency}{mark}",
             "診療科": c.get("category", ""),
@@ -264,8 +264,8 @@ with gr.Blocks(
     # ===== 中段: 結果テーブル =====
     with gr.Row():
         disease_table = gr.Dataframe(
-            label="候補疾患（確率順）",
-            headers=["#", "疾患名", "確率", "重み", "緊急度", "診療科"],
+            label="候補疾患（類似度順）",
+            headers=["#", "疾患名", "類似度", "重み", "緊急度", "診療科"],
             interactive=False,
         )
     with gr.Row():

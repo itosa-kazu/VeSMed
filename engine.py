@@ -16,7 +16,6 @@ from config import (
     LLM_FALLBACK_API_KEY, LLM_FALLBACK_BASE_URL, LLM_FALLBACK_MODEL,
     LLM_MAX_RETRIES,
     EMBEDDING_API_KEY, EMBEDDING_BASE_URL, EMBEDDING_MODEL,
-    TAU,
     DISEASES_JSONL, TESTS_JSONL, FINDINGS_JSONL, CHROMA_DIR, DATA_DIR,
 )
 
@@ -641,28 +640,15 @@ class VeSMedEngine:
     # ----------------------------------------------------------------
     # Step 3: Softmax → 先験確率
     # ----------------------------------------------------------------
-    def compute_priors(self, candidates: list, tau: float = None) -> list:
+    def compute_priors(self, candidates: list) -> list:
         """
-        候補疾患の類似度スコアをsoftmaxで先験確率に変換。
-        candidatesに"prior"フィールドを追加して返す。
-
-        生のcosine類似度にsoftmax(τ=1)を直接適用。
-        正規化なし = embeddingの距離をそのまま信じる。
+        候補疾患に臨床重みを付与する。
+        softmax廃止: 生のcosine類似度をそのまま使う（embeddingの距離を直接信じる）。
         """
-        if tau is None:
-            tau = TAU
-
         if not candidates:
             return candidates
 
-        sims = np.array([c["similarity"] for c in candidates])
-
-        # softmax with temperature（正規化なし、生のcosine類似度を直接使用）
-        exp_vals = np.exp(sims / tau)
-        priors = exp_vals / exp_vals.sum()
-
-        for i, c in enumerate(candidates):
-            c["prior"] = float(priors[i])
+        for c in candidates:
             c["clinical_weight"] = self.disease_2c.get(c["disease_name"], {}).get("weight", 1.0)
 
         return candidates
@@ -758,9 +744,10 @@ class VeSMedEngine:
     def rank_tests_critical(self, candidates: list, done_tests: list = None) -> list:
         """
         Part B: Critical Hit — 致命疾患排除ランキング。
-        critical_hit_j = max_i [ exp(cos_critical_i) * prior_i * sim_matrix[i][j] ]
+        critical_hit_j = max_i [ exp(cos_critical_i) * similarity_i * sim_matrix[i][j] ]
 
         分散ではなく最大命中: 「見逃したら死ぬ疾患を排除できる検査」を上位に。
+        softmax廃止: 生のcosine類似度を直接使用。
         """
         if done_tests is None:
             done_tests = []
@@ -775,11 +762,11 @@ class VeSMedEngine:
             for c in candidates
         ], dtype=float)
 
-        # prior
-        priors = np.array([c.get("prior", 0.0) for c in candidates], dtype=float)
+        # 生cosine類似度（softmax廃止、embeddingの距離を直接信じる）
+        sims = np.array([c.get("similarity", 0.0) for c in candidates], dtype=float)
 
-        # cp = critical_weight * prior (N_candidates,)
-        cp = critical_w * priors
+        # cp = critical_weight * similarity (N_candidates,)
+        cp = critical_w * sims
 
         # sim_matrix行を取得
         disease_rows = []
@@ -949,34 +936,31 @@ class VeSMedEngine:
             interpretation = {c["disease_name"]: {"判定": "陽性", "理由": "解釈不能"} for c in candidates}
 
         # ベイズ更新（疾患ごとに陽性/陰性が異なる）
-        # 原則: 検査と無関係な疾患は LR=1.0（確率不変）
-        priors = np.array([c.get("prior", 0.0) for c in candidates])
-        posteriors = np.zeros_like(priors)
+        # 原則: 検査と無関係な疾患は LR=1.0（類似度不変）
+        sims = np.array([c.get("similarity", 0.0) for c in candidates])
+        posteriors = np.zeros_like(sims)
 
         for i, c in enumerate(candidates):
-            p = priors[i]
+            s = sims[i]
             name = c["disease_name"]
             interp = interpretation.get(name, {})
             is_positive = interp.get("判定", "陽性") == "陽性"
 
             if name in disease_se_sp:
-                # この疾患にSe/Spが格納されている → 関連あり
                 se, sp = disease_se_sp[name]
                 if is_positive:
-                    posteriors[i] = p * se
+                    posteriors[i] = s * se
                 else:
-                    posteriors[i] = p * (1 - se)
+                    posteriors[i] = s * (1 - se)
             elif not has_stored_se_sp:
-                # 全疾患にSe/Sp格納なし（症状・ROS等）→ LLM推定値を使用
                 se = float(interp.get("se", 0.5))
                 sp = float(interp.get("sp", 0.5))
                 if is_positive:
-                    posteriors[i] = p * se
+                    posteriors[i] = s * se
                 else:
-                    posteriors[i] = p * (1 - se)
+                    posteriors[i] = s * (1 - se)
             else:
-                # Se/Sp格納ありの検査だが、この疾患には無関係 → LR=1.0（確率不変）
-                posteriors[i] = p
+                posteriors[i] = s
 
         # 正規化
         total = posteriors.sum()
@@ -987,9 +971,9 @@ class VeSMedEngine:
         for i, c in enumerate(candidates):
             updated.append({
                 **c,
-                "prior": float(posteriors[i]),
+                "similarity": float(posteriors[i]),
             })
-        updated.sort(key=lambda x: x["prior"], reverse=True)
+        updated.sort(key=lambda x: x["similarity"], reverse=True)
 
         return updated, interpretation
 
