@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # LLM API設定（プライマリ）
-LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "REDACTED_LLM_KEY")
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://new.lemonapi.site/v1")
 LLM_MODEL = os.environ.get("LLM_MODEL", "[V]gemini-3-pro-preview")
 

@@ -23,8 +23,8 @@ from config import (
 
 class VeSMedEngine:
     def __init__(self):
-        self.llm_client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
-        self.llm_fallback_client = OpenAI(api_key=LLM_FALLBACK_API_KEY, base_url=LLM_FALLBACK_BASE_URL)
+        self.llm_client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL, timeout=60)
+        self.llm_fallback_client = OpenAI(api_key=LLM_FALLBACK_API_KEY, base_url=LLM_FALLBACK_BASE_URL, timeout=60)
         self.embed_client = OpenAI(api_key=EMBEDDING_API_KEY, base_url=EMBEDDING_BASE_URL)
 
         # ChromaDB接続
@@ -94,9 +94,16 @@ class VeSMedEngine:
         self.test_names = []      # col順の検査名リスト
         self._compute_similarity_matrix()
 
-        # 検査の質（embedding推定）
-        self.test_quality = {}  # test_name → float (cos(quality_desc, ideal_anchor))
+        # 検査の質（2Q: Value + Feasibility）
+        self.test_quality = {}  # test_name → {"value": float, "feasibility": float}
         self._compute_test_quality()
+
+        # 検査リスクembedding（risk_description → embedding）
+        self.risk_embs = {}  # test_name → np.array (4096,)
+        self._compute_risk_embeddings()
+
+        # 最後のクエリembedding（rank_testsでrisk_relevance計算に使用）
+        self._last_query_embedding = None
 
     # ----------------------------------------------------------------
     # 2Cスコア計算（起動時に1回）
@@ -113,8 +120,19 @@ class VeSMedEngine:
         - exp() により常に正値、フロア不要、softmaxと数学的に統一
         """
         anchors = {
-            "critical": "見逃すと数時間以内に死亡する、または不可逆的な臓器障害を来す致命的疾患。緊急手術や集中治療を要する。",
-            "curable": "早期に適切な治療（抗菌薬、手術、特異的治療）を行えば完治または大幅な改善が期待できる治療可能な疾患。",
+            "critical": (
+                "未治療の場合、数時間以内にバイタルサイン急速悪化（血圧低下、頻脈から徐脈へ移行、"
+                "SpO2低下、呼吸停止）、意識レベル進行性低下（JCS 300、GCS 3）、"
+                "ショック所見（冷汗、末梢チアノーゼ、毛細血管再充満時間延長、乏尿から無尿）、"
+                "多臓器不全所見（肝酵素急上昇、凝固異常によるDIC、代謝性アシドーシス、乳酸上昇）"
+                "が出現し、心停止・自発呼吸停止・瞳孔散大固定に至る。"
+            ),
+            "curable": (
+                "治療開始後、数時間から数日で検査値の正常化（CRP低下、白血球正常化、培養陰性化、"
+                "肝酵素低下、腎機能改善）、バイタルサイン安定化（解熱、血圧正常化、頻脈改善、"
+                "SpO2上昇）、症状消失（疼痛消失、呼吸困難改善、意識清明化）、"
+                "画像所見改善（浸潤影消退、膿瘍縮小、浮腫軽減、閉塞解除）が観察される。"
+            ),
         }
 
         # アンカーをembedding
@@ -231,7 +249,7 @@ class VeSMedEngine:
         )
         print(f"[類似度行列] {self.sim_matrix.shape} 計算・キャッシュ完了")
 
-    def _batch_embed(self, texts, batch_size=50, max_workers=10):
+    def _batch_embed(self, texts, batch_size=50, max_workers=40):
         """テキストリストをバッチ並行でembedding。ndarray (N, dim) を返す。"""
         batches = []
         for i in range(0, len(texts), batch_size):
@@ -264,15 +282,20 @@ class VeSMedEngine:
         return np.array(all_embs, dtype=np.float32)
 
     # ----------------------------------------------------------------
-    # 検査の質推定（embedding、キャッシュ付き）
+    # 検査の質推定（差分ベクトル射影、キャッシュ付き）
     # ----------------------------------------------------------------
     def _compute_test_quality(self):
         """
-        検査の quality_description をembedし、理想検査アンカーとの
-        余弦類似度から質スコアを推定。
-        quality = cos_sim(quality_description, ideal_anchor)
-        utility計算時に exp(quality) を乗じる。
-        結果はJSONファイルにキャッシュし、次回起動時はロードのみ。
+        検査の quality_description をembedし、差分ベクトル軸への射影で
+        質スコアを推定。
+
+        quality_axis = normalize(good_emb - bad_emb)
+        quality_score = dot(test_emb_normalized, quality_axis)
+
+        good: 致命的疾患検出・治療直結・非侵襲・安全・安価・即時
+        bad:  侵襲的・禁忌多数・合併症・高額・長時間・急性期不可
+
+        test_weight = exp(quality_score)
         """
         cache_file = os.path.join(DATA_DIR, "test_quality.json")
 
@@ -292,40 +315,51 @@ class VeSMedEngine:
                             test_descriptions[td["test_name"]] = desc
                     except (json.JSONDecodeError, KeyError):
                         continue
-            print(f"[質] {len(test_descriptions)}件のquality_description読込")
+            print(f"[2Q] {len(test_descriptions)}件のquality_description読込")
 
         # 全検査名を収集
         all_test_names = sorted(set(self.test_names))
 
-        # キャッシュが存在し、全検査名をカバーしていればロード
+        # キャッシュが存在し、全検査名をカバーし、axis形式であればロード
         if os.path.exists(cache_file):
             with open(cache_file, "r", encoding="utf-8") as f:
                 cached = json.load(f)
             missing = set(all_test_names) - set(cached.keys())
-            if not missing:
-                self.test_quality = {k: float(v) for k, v in cached.items()}
-                print(f"[質] キャッシュから{len(self.test_quality)}検査の質スコア読込")
+            sample = next(iter(cached.values()), None) if cached else None
+            if not missing and isinstance(sample, dict) and "axis" in sample:
+                self.test_quality = cached
+                print(f"[2Q] キャッシュから{len(self.test_quality)}検査の差分軸スコア読込")
                 return
-            print(f"[質] キャッシュに{len(missing)}件の未計算検査あり、再計算")
+            print(f"[2Q] キャッシュなしまたは旧形式、再計算")
 
-        # 理想検査アンカー
-        anchor_text = (
-            "末梢静脈からの採血のみで実施可能な非侵襲的検査。穿刺部の軽微な疼痛以外に"
-            "身体的負担なし。前処置不要、外来採血室で数分以内に完了。合併症リスクなし。"
-            "保険点数100点未満の安価な検査。院内検査で15分以内に結果判明。"
-            "急性心筋梗塞、敗血症、肺塞栓症、大動脈解離など見逃すと死亡する致命的疾患を"
-            "高い感度で検出可能。陽性結果は緊急治療（PCI、抗菌薬、手術）の開始に直結し、"
-            "陰性結果は致命的疾患を高い確度で除外できる。治療効果のモニタリングにも使用可能で、"
-            "結果に基づく早期介入により予後が大幅に改善する。"
+        # Good/Badアンカー（所見即所得: 観察可能な記述のみ）
+        good_text = (
+            "末梢静脈からの採血のみで実施可能。穿刺部の軽微な疼痛以外に身体所見の変化を生じない。"
+            "検査に伴う出血・感染・臓器損傷の所見が発生しない。"
+            "急性期・血行動態不安定・重症・妊婦・小児でもバイタルサインに影響なく実施できる。"
+            "検査は数分で完了し、結果は15分以内に数値として判明する。"
+            "陽性であれば血圧低下・SpO2低下・意識障害・ショック所見が急速に進行する疾患を検出し、"
+            "陰性であればこれらの急性所見が出現する可能性を除外できる。"
+            "治療開始後の検査値変化（CRP低下、白血球正常化、トロポニン低下）をモニタリングでき、"
+            "解熱・血圧安定化・SpO2改善・意識清明化といった臨床所見の改善と対応する。"
+        )
+        bad_text = (
+            "全身麻酔下でカテーテル挿入・臓器穿刺・開腹を伴い、"
+            "術後に疼痛・出血・発熱・創部感染の所見が高頻度に出現する。"
+            "検査に伴い血圧低下・不整脈・気胸・臓器穿孔・アナフィラキシー所見が発生しうる。"
+            "血行動態不安定・凝固異常・腎機能低下の患者では合併症所見が増悪する。"
+            "前処置に数時間、結果判明に数日を要し、その間に病態が進行しうる。"
+            "検査値の異常を検出しても、どの疾患による異常かの鑑別には追加検査所見が必要となる。"
+            "治療前後の検査値変化を反映せず、臨床所見の改善をモニタリングできない。"
         )
 
-        # embedするテキスト: quality_descriptionがあれば使用、なければ検査名
+        # embedするテキスト: [good, bad, test1, test2, ...]
         test_list = all_test_names
         embed_texts = []
         for tname in test_list:
             desc = test_descriptions.get(tname, "")
             embed_texts.append(desc if desc else tname)
-        all_texts = [anchor_text] + embed_texts
+        all_texts = [good_text, bad_text] + embed_texts
 
         # バッチに分割して並行embedding
         batch_size = 50
@@ -345,12 +379,12 @@ class VeSMedEngine:
                     )
                     return start_idx, [np.array(item.embedding) for item in resp.data]
                 except Exception as e:
-                    print(f"[質] batch (offset={start_idx}) 失敗 (試行{attempt+1}): {e}")
+                    print(f"[2Q] batch (offset={start_idx}) 失敗 (試行{attempt+1}): {e}")
                     time.sleep(2 ** attempt)
             return start_idx, None
 
         max_workers = 10
-        print(f"[質] {total_batches}バッチを{max_workers}並行でembedding開始")
+        print(f"[2Q] {total_batches}バッチを{max_workers}並行でembedding開始")
         failed = False
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(_embed_batch, b) for b in batches]
@@ -358,36 +392,99 @@ class VeSMedEngine:
             for future in as_completed(futures):
                 start_idx, result = future.result()
                 if result is None:
-                    print(f"[質] batch (offset={start_idx}) が3回失敗、中断")
+                    print(f"[2Q] batch (offset={start_idx}) が3回失敗、中断")
                     failed = True
                     break
                 for j, emb in enumerate(result):
                     all_embs[start_idx + j] = emb
                 completed += 1
                 if completed % 5 == 0 or completed == total_batches:
-                    print(f"[質] embedding {completed}/{total_batches} バッチ完了")
+                    print(f"[2Q] embedding {completed}/{total_batches} バッチ完了")
 
         if failed:
             return
 
-        anchor_emb = all_embs[0]
-        test_embs = all_embs[1:]
+        good_emb = all_embs[0]
+        bad_emb = all_embs[1]
+        test_embs = all_embs[2:]
 
-        def cosine_sim(a, b):
-            na, nb = np.linalg.norm(a), np.linalg.norm(b)
-            if na == 0 or nb == 0:
-                return 0.0
-            return float(np.dot(a, b) / (na * nb))
+        # 差分ベクトル軸: good - bad を正規化
+        axis = good_emb - bad_emb
+        axis_norm = np.linalg.norm(axis)
+        if axis_norm > 0:
+            axis = axis / axis_norm
 
         for i, tname in enumerate(test_list):
-            sim = cosine_sim(test_embs[i], anchor_emb)
-            self.test_quality[tname] = sim
+            t_emb = test_embs[i]
+            t_norm = np.linalg.norm(t_emb)
+            if t_norm > 0:
+                t_emb = t_emb / t_norm
+            proj = float(np.dot(t_emb, axis))
+            self.test_quality[tname] = {
+                "axis": proj,
+            }
 
         # キャッシュに保存
         with open(cache_file, "w", encoding="utf-8") as f:
             json.dump(self.test_quality, f, ensure_ascii=False, indent=1)
 
-        print(f"[質] {len(self.test_quality)}検査の質スコア計算完了")
+        print(f"[2Q] {len(self.test_quality)}検査の差分軸スコア計算完了")
+
+    # ----------------------------------------------------------------
+    # 検査リスクembedding計算（起動時に1回）
+    # ----------------------------------------------------------------
+    def _compute_risk_embeddings(self):
+        """
+        risk_descriptionを持つ検査のembeddingを計算・キャッシュ。
+        risk_relevance = cos(risk_emb, patient_emb) で患者へのリスク関連度を推定。
+        """
+        cache_file = os.path.join(DATA_DIR, "risk_embs.npz")
+
+        # risk_descriptionを持つ検査を収集
+        risk_tests = {}
+        for tname, tdata in self.test_db.items():
+            desc = tdata.get("risk_description", "")
+            if desc:
+                risk_tests[tname] = desc
+
+        if not risk_tests:
+            print("[Risk] risk_descriptionなし、スキップ")
+            return
+
+        risk_names = sorted(risk_tests.keys())
+
+        # キャッシュチェック
+        if os.path.exists(cache_file):
+            data = np.load(cache_file, allow_pickle=True)
+            cached_names = list(data["test_names"])
+            if cached_names == risk_names:
+                for i, name in enumerate(risk_names):
+                    self.risk_embs[name] = data["embeddings"][i]
+                print(f"[Risk] キャッシュから{len(self.risk_embs)}検査のリスクembedding読込")
+                return
+
+        # embedding計算
+        texts = [risk_tests[n] for n in risk_names]
+        embs = self._batch_embed(texts)
+        if embs is None:
+            print("[Risk] embedding失敗")
+            return
+
+        # 正規化して保存
+        norms = np.linalg.norm(embs, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        embs_normed = embs / norms
+
+        for i, name in enumerate(risk_names):
+            self.risk_embs[name] = embs_normed[i]
+
+        # キャッシュ保存
+        np.savez(
+            cache_file,
+            embeddings=embs_normed,
+            test_names=np.array(risk_names, dtype=object),
+        )
+        print(f"[Risk] {len(self.risk_embs)}検査のリスクembedding計算・キャッシュ完了")
 
     # ----------------------------------------------------------------
     # LLM呼び出し（リトライ + フォールバック）
@@ -572,6 +669,8 @@ class VeSMedEngine:
             input=[text],
         )
         query_embedding = resp.data[0].embedding
+        # 最後のクエリembeddingを保持（risk_relevance計算用）
+        self._last_query_embedding = np.array(query_embedding, dtype=np.float32)
 
         n_total = self.collection.count()
         results = self.collection.query(
@@ -658,7 +757,7 @@ class VeSMedEngine:
         分散が大きい = 疾患間でバラつく = 鑑別に有用な検査。
 
         score = Var_prior(cos(D_i, T_j)) × 2C臨床重み
-        utility = score * exp(quality)
+        utility = score * exp(quality_axis_projection)
 
         返り値: [{"test_name": str, "score": float, "quality": float,
                   "utility": float}, ...]
@@ -700,20 +799,36 @@ class VeSMedEngine:
         mu = (w_col * sim_sub).sum(axis=0)  # (N_tests,)
         var = (w_col * (sim_sub - mu) ** 2).sum(axis=0)  # (N_tests,)
 
+        # risk_relevance計算用: patient embeddingを正規化
+        patient_emb = None
+        if self._last_query_embedding is not None and len(self.risk_embs) > 0:
+            pe = self._last_query_embedding
+            pe_norm = np.linalg.norm(pe)
+            if pe_norm > 0:
+                patient_emb = pe / pe_norm
+
         ranked = []
         for j, tname in enumerate(self.test_names):
             if tname in done_set:
                 continue
 
             score = float(var[j])
-            quality = self.test_quality.get(tname, 0.5)
-            utility = score * math.exp(quality)
+            q = self.test_quality.get(tname, {"axis": 0.0})
+            axis_proj = q["axis"]
+            utility = score * math.exp(axis_proj)
+
+            # risk_relevance: 侵襲的検査のリスクが患者状態と関連する場合にutilityを低下
+            risk_rel = 0.0
+            if patient_emb is not None and tname in self.risk_embs:
+                risk_rel = max(0.0, float(np.dot(self.risk_embs[tname], patient_emb)))
+                utility *= (1.0 - risk_rel)
 
             tdata = self.test_db.get(tname, {})
             ranked.append({
                 "test_name": tname,
                 "score": round(score, 6),
-                "quality": round(quality, 4),
+                "quality": round(axis_proj, 4),
+                "risk_relevance": round(risk_rel, 4),
                 "turnaround_minutes": tdata.get("turnaround_minutes", 60),
                 "utility": round(utility, 6),
             })
