@@ -54,15 +54,17 @@ def analyze_patient(patient_text, state):
     print(f"[TIMING] detect_done_tests: {t2-t1:.1f}s")
 
     ranked_tests = eng.rank_tests(candidates, done_tests=done_tests)
+    critical_tests = eng.rank_tests_critical(candidates, done_tests=done_tests)
     available_tests = eng.find_matching_tests(candidates, done_tests=done_tests)
     t3 = _time.time()
-    print(f"[TIMING] rank_tests+find: {t3-t2:.1f}s")
+    print(f"[TIMING] rank_tests+critical+find: {t3-t2:.1f}s")
     print(f"[TIMING] === TOTAL: {t3-t0:.1f}s ===")
 
     new_state = {
         "patient_text": patient_text,
         "candidates": candidates,
         "ranked_tests": ranked_tests,
+        "critical_tests": critical_tests,
         "done_tests": done_tests,
         "history": [],
     }
@@ -73,6 +75,7 @@ def analyze_patient(patient_text, state):
         status,
         format_diseases_df(candidates),
         format_tests_df(ranked_tests),
+        format_critical_df(critical_tests),
         gr.update(choices=available_tests, value=None), "",
         new_state,
         "",
@@ -84,7 +87,7 @@ def apply_finding(test_name, finding_text, state):
     if not state or "patient_text" not in state:
         return (
             "先に患者情報を分析してください。",
-            None, None,
+            None, None, None,
             gr.update(choices=[], value=None), "",
             state, "",
         )
@@ -94,6 +97,7 @@ def apply_finding(test_name, finding_text, state):
             "検査を選択してください。",
             format_diseases_df(state["candidates"]),
             format_tests_df(state["ranked_tests"]),
+            format_critical_df(state.get("critical_tests", [])),
             gr.update(), "",
             state,
             format_history(state.get("history", [])),
@@ -104,6 +108,7 @@ def apply_finding(test_name, finding_text, state):
             "所見を入力してください。",
             format_diseases_df(state["candidates"]),
             format_tests_df(state["ranked_tests"]),
+            format_critical_df(state.get("critical_tests", [])),
             gr.update(), "",
             state,
             format_history(state.get("history", [])),
@@ -128,12 +133,14 @@ def apply_finding(test_name, finding_text, state):
     candidates = eng.search_diseases(updated_text)
     candidates = eng.compute_priors(candidates)
     ranked_tests = eng.rank_tests(candidates, done_tests=done_tests)
+    critical_tests = eng.rank_tests_critical(candidates, done_tests=done_tests)
     available_tests = eng.find_matching_tests(candidates, done_tests=done_tests)
 
     new_state = {
         "patient_text": patient_text,
         "candidates": candidates,
         "ranked_tests": ranked_tests,
+        "critical_tests": critical_tests,
         "done_tests": done_tests,
         "history": history,
     }
@@ -144,6 +151,7 @@ def apply_finding(test_name, finding_text, state):
         status,
         format_diseases_df(candidates),
         format_tests_df(ranked_tests),
+        format_critical_df(critical_tests),
         gr.update(choices=available_tests, value=None), "",
         new_state,
         format_history(history),
@@ -154,7 +162,7 @@ def reset_session():
     return (
         "",
         "リセットしました。",
-        None, None,
+        None, None, None,
         gr.update(choices=[], value=None), "",
         {},
         "",
@@ -194,6 +202,19 @@ def format_tests_df(ranked_tests):
             "分散": f"{t['score']:.4f}",
             "質": f"{t['quality']:.4f}",
             "関連疾患": related,
+        })
+    return pd.DataFrame(rows)
+
+
+def format_critical_df(critical_tests):
+    rows = []
+    for i, t in enumerate(critical_tests[:TOP_K_TESTS]):
+        rows.append({
+            "#": i + 1,
+            "検査名": t["test_name"],
+            "効用": f"{t['utility']:.4f}",
+            "命中": f"{t['critical_hit']:.4f}",
+            "排除対象": t.get("hit_disease", ""),
         })
     return pd.DataFrame(rows)
 
@@ -242,16 +263,22 @@ with gr.Blocks(
 
     # ===== 中段: 結果テーブル =====
     with gr.Row():
+        disease_table = gr.Dataframe(
+            label="候補疾患（確率順）",
+            headers=["#", "疾患名", "確率", "重み", "緊急度", "診療科"],
+            interactive=False,
+        )
+    with gr.Row():
         with gr.Column(scale=1):
-            disease_table = gr.Dataframe(
-                label="候補疾患（確率順）",
-                headers=["#", "疾患名", "確率", "重み", "緊急度", "診療科"],
+            test_table = gr.Dataframe(
+                label="Part A: 鑑別推奨（分散ベース）",
+                headers=["#", "検査名", "効用", "分散", "質", "関連疾患"],
                 interactive=False,
             )
         with gr.Column(scale=1):
-            test_table = gr.Dataframe(
-                label="推薦検査（効用 = 情報利得 / コスト 降順）",
-                headers=["#", "検査名", "効用", "情報利得", "コスト", "関連疾患"],
+            critical_table = gr.Dataframe(
+                label="Part B: Critical排除推奨（最大命中）",
+                headers=["#", "検査名", "効用", "命中", "排除対象"],
                 interactive=False,
             )
 
@@ -280,7 +307,7 @@ with gr.Blocks(
 
     # ===== イベント =====
 
-    outputs = [status_text, disease_table, test_table, test_selector, finding_input, state, history_display]
+    outputs = [status_text, disease_table, test_table, critical_table, test_selector, finding_input, state, history_display]
 
     analyze_btn.click(
         fn=analyze_patient,

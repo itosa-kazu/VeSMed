@@ -755,6 +755,89 @@ class VeSMedEngine:
         ranked.sort(key=lambda x: x["utility"], reverse=True)
         return ranked
 
+    def rank_tests_critical(self, candidates: list, done_tests: list = None) -> list:
+        """
+        Part B: Critical Hit — 致命疾患排除ランキング。
+        critical_hit_j = max_i [ exp(cos_critical_i) * prior_i * sim_matrix[i][j] ]
+
+        分散ではなく最大命中: 「見逃したら死ぬ疾患を排除できる検査」を上位に。
+        """
+        if done_tests is None:
+            done_tests = []
+        done_set = set(self.test_name_map.get(t, t) for t in done_tests)
+
+        if self.sim_matrix is None or len(self.test_names) == 0:
+            return []
+
+        # critical_weight = exp(cos_critical) （curable除外、critical成分のみ）
+        critical_w = np.array([
+            math.exp(self.disease_2c.get(c["disease_name"], {}).get("critical", 0.0))
+            for c in candidates
+        ], dtype=float)
+
+        # prior
+        priors = np.array([c.get("prior", 0.0) for c in candidates], dtype=float)
+
+        # cp = critical_weight * prior (N_candidates,)
+        cp = critical_w * priors
+
+        # sim_matrix行を取得
+        disease_rows = []
+        for c in candidates:
+            row = self.disease_idx.get(c["disease_name"])
+            disease_rows.append(row if row is not None else -1)
+        disease_rows = np.array(disease_rows)
+
+        valid_mask = disease_rows >= 0
+        sim_sub = np.zeros((len(candidates), len(self.test_names)))
+        sim_sub[valid_mask] = self.sim_matrix[disease_rows[valid_mask]]
+
+        # weighted_sim = cp[:, None] * sim_sub → (N_candidates, N_tests)
+        weighted_sim = cp[:, np.newaxis] * sim_sub
+
+        # max over diseases
+        critical_scores = weighted_sim.max(axis=0)       # (N_tests,)
+        best_disease_idx = weighted_sim.argmax(axis=0)    # (N_tests,)
+
+        # risk_relevance計算用
+        patient_emb = None
+        if self._last_query_embedding is not None and len(self.risk_embs) > 0:
+            pe = self._last_query_embedding
+            pe_norm = np.linalg.norm(pe)
+            if pe_norm > 0:
+                patient_emb = pe / pe_norm
+
+        ranked = []
+        for j, tname in enumerate(self.test_names):
+            if tname in done_set:
+                continue
+
+            ch = float(critical_scores[j])
+            q = self.test_quality.get(tname, {"axis": 0.0})
+            axis_proj = q["axis"]
+            utility = ch * math.exp(axis_proj)
+
+            # risk_relevance
+            risk_rel = 0.0
+            if patient_emb is not None and tname in self.risk_embs:
+                risk_rel = max(0.0, float(np.dot(self.risk_embs[tname], patient_emb)))
+                utility *= (1.0 - risk_rel)
+
+            # 最大命中疾患
+            bi = int(best_disease_idx[j])
+            hit_disease = candidates[bi]["disease_name"] if bi < len(candidates) else ""
+
+            ranked.append({
+                "test_name": tname,
+                "critical_hit": round(ch, 6),
+                "quality": round(axis_proj, 4),
+                "utility": round(utility, 6),
+                "hit_disease": hit_disease,
+            })
+
+        ranked.sort(key=lambda x: x["utility"], reverse=True)
+        return ranked
+
     @staticmethod
     def _weighted_entropy(probs, weights):
         """重み付きエントロピー H_w = -Σ w_i × p_i × log2(p_i)"""
