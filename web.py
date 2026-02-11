@@ -30,6 +30,7 @@ def init_engine():
 
 def analyze_patient(patient_text, state):
     """患者情報を分析（ベクトル検索）"""
+    import time as _time
     if not patient_text.strip():
         return (
             "患者情報を入力してください。",
@@ -41,20 +42,36 @@ def analyze_patient(patient_text, state):
     eng = init_engine()
 
     # rewrite_query と extract_done_tests は独立 → 並行実行で ~40秒短縮
+    t0 = _time.time()
     with ThreadPoolExecutor(max_workers=2) as ex:
         future_rewrite = ex.submit(eng.rewrite_query, patient_text)
         future_done = ex.submit(eng.extract_done_tests, patient_text)
         rewritten = future_rewrite.result()
         raw_done = future_done.result()
+    t1 = _time.time()
+    print(f"[TIMING] LLM (rewrite+extract): {t1-t0:.1f}s")
 
     candidates = eng.search_diseases(rewritten, original_text=patient_text)
+    t2 = _time.time()
+    print(f"[TIMING] search_diseases (embed+chromadb): {t2-t1:.1f}s")
+
     candidates = eng.compute_priors(candidates)
+    t3 = _time.time()
+    print(f"[TIMING] compute_priors: {t3-t2:.1f}s")
 
     # 名寄せ（candidates依存のため並行化できない）
     done_tests = eng.normalize_done_tests(raw_done, candidates)
+    t4 = _time.time()
+    print(f"[TIMING] normalize_done_tests: {t4-t3:.1f}s")
 
     ranked_tests = eng.rank_tests(candidates, done_tests=done_tests)
+    t5 = _time.time()
+    print(f"[TIMING] rank_tests: {t5-t4:.1f}s")
+
     available_tests = eng.find_matching_tests(candidates, done_tests=done_tests)
+    t6 = _time.time()
+    print(f"[TIMING] find_matching_tests: {t6-t5:.1f}s")
+    print(f"[TIMING] === TOTAL: {t6-t0:.1f}s ===")
 
     new_state = {
         "patient_text": patient_text,

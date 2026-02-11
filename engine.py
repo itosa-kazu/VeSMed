@@ -23,8 +23,8 @@ from config import (
 
 class VeSMedEngine:
     def __init__(self):
-        self.llm_client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL, timeout=60)
-        self.llm_fallback_client = OpenAI(api_key=LLM_FALLBACK_API_KEY, base_url=LLM_FALLBACK_BASE_URL, timeout=60)
+        self.llm_client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL, timeout=30)
+        self.llm_fallback_client = OpenAI(api_key=LLM_FALLBACK_API_KEY, base_url=LLM_FALLBACK_BASE_URL, timeout=30)
         self.embed_client = OpenAI(api_key=EMBEDDING_API_KEY, base_url=EMBEDDING_BASE_URL)
 
         # ChromaDB接続
@@ -495,7 +495,7 @@ class VeSMedEngine:
         for attempt in range(LLM_MAX_RETRIES + 1):
             try:
                 resp = self.llm_client.chat.completions.create(
-                    model=LLM_MODEL,
+                    model="[V]gemini-3-flash-preview",
                     messages=messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
@@ -525,6 +525,7 @@ class VeSMedEngine:
     def rewrite_query(self, patient_text: str) -> str:
         """患者情報をLLMで標準的な医学用語に整理する"""
         return self._llm_call(
+            max_tokens=1024,
             messages=[
                 {"role": "system", "content": (
                     "あなたは経験豊富な日本の臨床医です。\n"
@@ -549,6 +550,7 @@ class VeSMedEngine:
         返り値: [{"test_name": str, "finding": str}, ...]
         """
         content = self._llm_call(
+            max_tokens=2048,
             messages=[
                 {"role": "system", "content": (
                     "あなたは経験豊富な日本の臨床医です。\n"
