@@ -739,6 +739,102 @@ class VeSMedEngine:
         ranked.sort(key=lambda x: x["utility"], reverse=True)
         return ranked
 
+    def rank_tests_confirm(self, candidates: list, novelty: np.ndarray = None) -> list:
+        """
+        Part C: 確認・同定推奨 — クラスタ特異度ランキング。
+        confirm_score_j = cluster_mu_j - global_mu_j
+
+        cluster_mu: 候補疾患群の加重平均類似度（Part Aと同じ重み）
+        global_mu:  全疾患の非加重平均類似度（背景基準）
+
+        差分 = この検査が候補群にどれだけ「特異的」か。
+        CRPのような汎用検査はglobal_muも高い → 差分小 → 沈む。
+        血液培養のような特異的検査はcluster_mu >> global_mu → 差分大 → 浮上。
+        ハイパーパラメータなし。
+        """
+        if self.sim_matrix is None or len(self.test_names) == 0:
+            return []
+
+        n_tests = len(self.test_names)
+        if novelty is None:
+            novelty = np.ones(n_tests)
+
+        # Part Aと同じ重み: 局所重み(平均以上) × 2C重み
+        raw_sims = np.array([c.get("similarity", 0.0) for c in candidates], dtype=float)
+        weights = np.array([
+            self.disease_2c.get(c["disease_name"], {}).get("weight", 1.0)
+            for c in candidates
+        ], dtype=float)
+        sim_centered = np.maximum(0.0, raw_sims - raw_sims.mean())
+        w = sim_centered * weights
+        w_sum = w.sum()
+        if w_sum > 0:
+            w = w / w_sum
+
+        # sim_matrix行を取得
+        disease_rows = []
+        for c in candidates:
+            row = self.disease_idx.get(c["disease_name"])
+            disease_rows.append(row if row is not None else -1)
+        disease_rows = np.array(disease_rows)
+
+        valid_mask = disease_rows >= 0
+        sim_sub = np.zeros((len(candidates), n_tests))
+        sim_sub[valid_mask] = self.sim_matrix[disease_rows[valid_mask]]
+
+        # クラスタ加重平均 vs 全疾患背景平均
+        w_col = w[:, np.newaxis]
+        cluster_mu = (w_col * sim_sub).sum(axis=0)  # (N_tests,)
+        global_mu = self.sim_matrix.mean(axis=0)      # (N_tests,)
+        confirm = cluster_mu - global_mu               # クラスタ特異度
+
+        # risk_relevance計算用
+        patient_emb = None
+        if self._last_query_embedding is not None and len(self.risk_embs) > 0:
+            pe = self._last_query_embedding
+            pe_norm = np.linalg.norm(pe)
+            if pe_norm > 0:
+                patient_emb = pe / pe_norm
+
+        # 関連疾患
+        weighted_contrib = w_col * sim_sub
+
+        ranked = []
+        for j, tname in enumerate(self.test_names):
+            score = float(confirm[j])
+            q = self.test_quality.get(tname, {"axis": 0.0})
+            axis_proj = q["axis"]
+            nov = float(novelty[j])
+            utility = score * math.exp(axis_proj) * nov
+
+            # risk_relevance
+            risk_rel = 0.0
+            if patient_emb is not None and tname in self.risk_embs:
+                risk_rel = max(0.0, float(np.dot(self.risk_embs[tname], patient_emb)))
+                utility *= (1.0 - risk_rel)
+
+            # 関連疾患Top5
+            contribs = weighted_contrib[:, j]
+            top_idx = np.argsort(contribs)[::-1][:5]
+            details = [
+                {"disease_name": candidates[int(k)]["disease_name"],
+                 "contribution": round(float(contribs[k]), 6)}
+                for k in top_idx if contribs[k] > 0
+            ]
+
+            ranked.append({
+                "test_name": tname,
+                "confirm_score": round(score, 6),
+                "quality": round(axis_proj, 4),
+                "novelty": round(nov, 4),
+                "risk_relevance": round(risk_rel, 4),
+                "utility": round(utility, 6),
+                "details": details,
+            })
+
+        ranked.sort(key=lambda x: x["utility"], reverse=True)
+        return ranked
+
     def rank_tests_critical(self, candidates: list, novelty: np.ndarray = None) -> list:
         """
         Part B: Critical Hit — 致命疾患排除ランキング。

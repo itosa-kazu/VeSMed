@@ -34,9 +34,9 @@ def format_candidates(candidates, top_n=10):
 
 
 def format_tests(tests, top_n=10):
-    """推薦検査を表示用にフォーマット"""
+    """Part A: 推薦検査を表示用にフォーマット"""
     lines = []
-    lines.append("【推薦検査（効用=分散×exp(質) 順）】")
+    lines.append("【Part A: 鑑別推奨（分散ベース）】")
     lines.append("-" * 60)
     lines.append(f"  {'#':>3s}  {'検査名':<25s}  {'分散':>8s}  {'質':>6s}  {'効用':>8s}")
     lines.append("-" * 60)
@@ -44,6 +44,25 @@ def format_tests(tests, top_n=10):
         lines.append(
             f"  {i + 1:3d}  {t['test_name']:<25s}  "
             f"{t['score']:8.4f}  "
+            f"{t['quality']:6.4f}  "
+            f"{t['utility']:8.4f}"
+        )
+    lines.append("=" * 60)
+    lines.append("")
+    return "\n".join(lines)
+
+
+def format_confirm(tests, top_n=10):
+    """Part C: 確認・同定推奨を表示用にフォーマット"""
+    lines = []
+    lines.append("【Part C: 確認・同定推奨（クラスタ特異度）】")
+    lines.append("-" * 60)
+    lines.append(f"  {'#':>3s}  {'検査名':<25s}  {'特異':>8s}  {'質':>6s}  {'効用':>8s}")
+    lines.append("-" * 60)
+    for i, t in enumerate(tests[:top_n]):
+        lines.append(
+            f"  {i + 1:3d}  {t['test_name']:<25s}  "
+            f"{t['confirm_score']:8.4f}  "
             f"{t['quality']:6.4f}  "
             f"{t['utility']:8.4f}"
         )
@@ -139,8 +158,10 @@ def main():
         print("情報利得計算中...")
         novelty = engine.compute_novelty(patient_text)
         ranked_tests = engine.rank_tests(candidates, novelty=novelty)
+        confirm_tests = engine.rank_tests_confirm(candidates, novelty=novelty)
 
         print(format_tests(ranked_tests, top_n=TOP_K_TESTS))
+        print(format_confirm(confirm_tests, top_n=TOP_K_TESTS))
 
 
 # config からインポート

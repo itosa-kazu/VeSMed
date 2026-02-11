@@ -32,7 +32,7 @@ def analyze_patient(patient_text):
     if not patient_text.strip():
         return (
             "患者情報を入力してください。",
-            None, None, None,
+            None, None, None, None,
         )
 
     eng = init_engine()
@@ -52,8 +52,9 @@ def analyze_patient(patient_text):
 
     ranked_tests = eng.rank_tests(candidates, novelty=novelty)
     critical_tests = eng.rank_tests_critical(candidates, novelty=novelty)
+    confirm_tests = eng.rank_tests_confirm(candidates, novelty=novelty)
     t3 = _time.time()
-    print(f"[TIMING] rank_tests+critical: {t3-t2:.1f}s")
+    print(f"[TIMING] rank_tests+critical+confirm: {t3-t2:.1f}s")
     print(f"[TIMING] === TOTAL: {t3-t0:.1f}s ===")
 
     status = f"分析完了 / 全{len(candidates)}疾患で計算 / 推薦検査{len(ranked_tests)}件"
@@ -63,6 +64,7 @@ def analyze_patient(patient_text):
         format_diseases_df(candidates),
         format_tests_df(ranked_tests),
         format_critical_df(critical_tests),
+        format_confirm_df(confirm_tests),
     )
 
 
@@ -70,7 +72,7 @@ def reset_session():
     return (
         "",
         "リセットしました。",
-        None, None, None,
+        None, None, None, None,
     )
 
 
@@ -125,6 +127,23 @@ def format_critical_df(critical_tests):
     return pd.DataFrame(rows)
 
 
+def format_confirm_df(confirm_tests):
+    rows = []
+    for i, t in enumerate(confirm_tests[:TOP_K_TESTS]):
+        related = ", ".join(d["disease_name"] for d in t.get("details", [])[:3])
+        if len(t.get("details", [])) > 3:
+            related += f" 他{len(t['details']) - 3}件"
+        rows.append({
+            "#": i + 1,
+            "検査名": t["test_name"],
+            "効用": f"{t['utility']:.4f}",
+            "特異": f"{t['confirm_score']:.4f}",
+            "新規": f"{t.get('novelty', 1.0):.2f}",
+            "関連疾患": related,
+        })
+    return pd.DataFrame(rows)
+
+
 # ----------------------------------------------------------------
 # Gradio UI
 # ----------------------------------------------------------------
@@ -174,10 +193,16 @@ with gr.Blocks(
                 headers=["#", "検査名", "効用", "命中", "新規", "排除対象"],
                 interactive=False,
             )
+    with gr.Row():
+        confirm_table = gr.Dataframe(
+            label="Part C: 確認・同定推奨（加重平均）",
+            headers=["#", "検査名", "効用", "特異", "新規", "関連疾患"],
+            interactive=False,
+        )
 
     # ===== イベント =====
 
-    outputs = [status_text, disease_table, test_table, critical_table]
+    outputs = [status_text, disease_table, test_table, critical_table, confirm_table]
 
     analyze_btn.click(
         fn=analyze_patient,
