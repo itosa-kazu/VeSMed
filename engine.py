@@ -697,6 +697,10 @@ class VeSMedEngine:
             if pe_norm > 0:
                 patient_emb = pe / pe_norm
 
+        # 関連疾患: 各検査で重みが高い上位疾患を抽出
+        # weighted_sim_sub = w * sim_sub (各疾患の検査への寄与度)
+        weighted_contrib = w_col * sim_sub  # (N_candidates, N_tests)
+
         ranked = []
         for j, tname in enumerate(self.test_names):
             score = float(var[j])
@@ -711,6 +715,15 @@ class VeSMedEngine:
                 risk_rel = max(0.0, float(np.dot(self.risk_embs[tname], patient_emb)))
                 utility *= (1.0 - risk_rel)
 
+            # 関連疾患Top5（重み付き寄与度順）
+            contribs = weighted_contrib[:, j]
+            top_idx = np.argsort(contribs)[::-1][:5]
+            details = [
+                {"disease_name": candidates[int(k)]["disease_name"],
+                 "contribution": round(float(contribs[k]), 6)}
+                for k in top_idx if contribs[k] > 0
+            ]
+
             tdata = self.test_db.get(tname, {})
             ranked.append({
                 "test_name": tname,
@@ -720,6 +733,7 @@ class VeSMedEngine:
                 "risk_relevance": round(risk_rel, 4),
                 "turnaround_minutes": tdata.get("turnaround_minutes", 60),
                 "utility": round(utility, 6),
+                "details": details,
             })
 
         ranked.sort(key=lambda x: x["utility"], reverse=True)
