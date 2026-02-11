@@ -3,9 +3,8 @@ VeSMed - Web UI (Gradio)
 ブラウザから操作できる対話型インターフェース
 
 フロー:
-  1. 患者情報入力 → ベクトル検索 → 候補疾患 + 推薦検査を表示
-  2. 検査所見入力 → 患者テキスト+全履歴で再ベクトル検索 → 候補・検査を更新
-  3. 繰り返し
+  1. 患者情報入力（自由記述）→ ベクトル検索 → 候補疾患 + 推薦検査を表示
+  2. 検査結果が出たら患者テキストに追記 → 再分析 → 更新
 """
 
 import gradio as gr
@@ -27,15 +26,13 @@ def init_engine():
 # コールバック
 # ----------------------------------------------------------------
 
-def analyze_patient(patient_text, state):
+def analyze_patient(patient_text):
     """患者情報を分析（ベクトル検索）"""
     import time as _time
     if not patient_text.strip():
         return (
             "患者情報を入力してください。",
-            None, None,
-            gr.update(choices=[], value=None), "",
-            state, "",
+            None, None, None,
         )
 
     eng = init_engine()
@@ -55,106 +52,17 @@ def analyze_patient(patient_text, state):
 
     ranked_tests = eng.rank_tests(candidates, done_tests=done_tests)
     critical_tests = eng.rank_tests_critical(candidates, done_tests=done_tests)
-    available_tests = eng.find_matching_tests(candidates, done_tests=done_tests)
     t3 = _time.time()
-    print(f"[TIMING] rank_tests+critical+find: {t3-t2:.1f}s")
+    print(f"[TIMING] rank_tests+critical: {t3-t2:.1f}s")
     print(f"[TIMING] === TOTAL: {t3-t0:.1f}s ===")
 
-    new_state = {
-        "patient_text": patient_text,
-        "candidates": candidates,
-        "ranked_tests": ranked_tests,
-        "critical_tests": critical_tests,
-        "done_tests": done_tests,
-        "history": [],
-    }
-
-    status = f"初回分析完了 / 全{len(candidates)}疾患で計算 / 推薦検査{len(ranked_tests)}件 / 既実施{len(done_tests)}件除外"
+    status = f"分析完了 / 全{len(candidates)}疾患で計算 / 推薦検査{len(ranked_tests)}件 / 既実施{len(done_tests)}件除外"
 
     return (
         status,
         format_diseases_df(candidates),
         format_tests_df(ranked_tests),
         format_critical_df(critical_tests),
-        gr.update(choices=available_tests, value=None), "",
-        new_state,
-        "",
-    )
-
-
-def apply_finding(test_name, finding_text, state):
-    """検査所見 → 患者テキスト+全履歴で再ベクトル検索"""
-    if not state or "patient_text" not in state:
-        return (
-            "先に患者情報を分析してください。",
-            None, None, None,
-            gr.update(choices=[], value=None), "",
-            state, "",
-        )
-
-    if not test_name:
-        return (
-            "検査を選択してください。",
-            format_diseases_df(state["candidates"]),
-            format_tests_df(state["ranked_tests"]),
-            format_critical_df(state.get("critical_tests", [])),
-            gr.update(), "",
-            state,
-            format_history(state.get("history", [])),
-        )
-
-    if not finding_text.strip():
-        return (
-            "所見を入力してください。",
-            format_diseases_df(state["candidates"]),
-            format_tests_df(state["ranked_tests"]),
-            format_critical_df(state.get("critical_tests", [])),
-            gr.update(), "",
-            state,
-            format_history(state.get("history", [])),
-        )
-
-    eng = init_engine()
-
-    # 検査履歴を更新
-    done_tests = state.get("done_tests", []) + [test_name]
-    history = state.get("history", []) + [{
-        "test": test_name,
-        "finding": finding_text.strip(),
-    }]
-
-    # 患者テキスト + 全検査履歴を結合して再ベクトル検索
-    patient_text = state["patient_text"]
-    findings_text = "\n".join(
-        f"【{h['test']}】{h['finding']}" for h in history
-    )
-    updated_text = f"{patient_text}\n\n既実施検査結果:\n{findings_text}"
-
-    candidates = eng.search_diseases(updated_text)
-    candidates = eng.compute_priors(candidates)
-    ranked_tests = eng.rank_tests(candidates, done_tests=done_tests)
-    critical_tests = eng.rank_tests_critical(candidates, done_tests=done_tests)
-    available_tests = eng.find_matching_tests(candidates, done_tests=done_tests)
-
-    new_state = {
-        "patient_text": patient_text,
-        "candidates": candidates,
-        "ranked_tests": ranked_tests,
-        "critical_tests": critical_tests,
-        "done_tests": done_tests,
-        "history": history,
-    }
-
-    status = f"【{test_name}】所見反映済み / 実施済み{len(done_tests)}件"
-
-    return (
-        status,
-        format_diseases_df(candidates),
-        format_tests_df(ranked_tests),
-        format_critical_df(critical_tests),
-        gr.update(choices=available_tests, value=None), "",
-        new_state,
-        format_history(history),
     )
 
 
@@ -163,9 +71,6 @@ def reset_session():
         "",
         "リセットしました。",
         None, None, None,
-        gr.update(choices=[], value=None), "",
-        {},
-        "",
     )
 
 
@@ -219,17 +124,6 @@ def format_critical_df(critical_tests):
     return pd.DataFrame(rows)
 
 
-def format_history(history):
-    if not history:
-        return ""
-    lines = []
-    for i, entry in enumerate(history):
-        lines.append(f"**{i + 1}. {entry['test']}**")
-        lines.append(f"  所見: {entry['finding']}")
-        lines.append("")
-    return "\n".join(lines)
-
-
 # ----------------------------------------------------------------
 # Gradio UI
 # ----------------------------------------------------------------
@@ -240,18 +134,16 @@ with gr.Blocks(
 
     gr.Markdown("""
 # VeSMed - ベクトル空間医学統一フレームワーク
-患者情報 → 候補疾患（ベクトル検索） → 推薦検査（情報利得） → 所見入力 → 再ベクトル検索 → 繰り返し
+患者情報（自由記述）→ ベクトル検索 → 候補疾患 + 推薦検査を表示。検査結果は患者テキストに追記して再分析。
     """)
-
-    state = gr.State({})
 
     # ===== 上段: 患者情報 =====
     with gr.Row():
         with gr.Column(scale=3):
             patient_input = gr.Textbox(
-                label="患者情報（自由記述）",
-                placeholder="例: 67歳の男性。繰り返す発熱を主訴に来院。7週間前から38℃前後の発熱が出現し、市販の解熱薬で一時的に解熱するが再度発熱する。",
-                lines=4,
+                label="患者情報（自由記述 — 検査結果もここに追記）",
+                placeholder="例: 67歳の男性。繰り返す発熱を主訴に来院。7週間前から38℃前後の発熱が出現し、市販の解熱薬で一時的に解熱するが再度発熱する。\n\n検査結果が出たらここに追記して再分析: 血液培養→黄色ブドウ球菌陽性、心エコー→大動脈弁に疣贅あり",
+                lines=6,
             )
             with gr.Row():
                 analyze_btn = gr.Button("分析開始", variant="primary", scale=2)
@@ -282,47 +174,18 @@ with gr.Blocks(
                 interactive=False,
             )
 
-    gr.Markdown("---")
-
-    # ===== 下段: 検査所見入力 =====
-    with gr.Row():
-        with gr.Column(scale=2):
-            gr.Markdown("### 検査所見を入力")
-            test_selector = gr.Dropdown(
-                label="検査名（選択 or 直接入力）",
-                choices=[],
-                allow_custom_value=True,
-                interactive=True,
-            )
-            finding_input = gr.Textbox(
-                label="所見（自由記述）",
-                placeholder="例: 疣贅あり、大動脈弁逆流あり / 異常なし / ST上昇 V1-V4",
-                lines=2,
-            )
-            submit_btn = gr.Button("所見を反映", variant="primary")
-
-        with gr.Column(scale=1):
-            gr.Markdown("### 検査履歴")
-            history_display = gr.Markdown("")
-
     # ===== イベント =====
 
-    outputs = [status_text, disease_table, test_table, critical_table, test_selector, finding_input, state, history_display]
+    outputs = [status_text, disease_table, test_table, critical_table]
 
     analyze_btn.click(
         fn=analyze_patient,
-        inputs=[patient_input, state],
+        inputs=[patient_input],
         outputs=outputs,
     )
     patient_input.submit(
         fn=analyze_patient,
-        inputs=[patient_input, state],
-        outputs=outputs,
-    )
-
-    submit_btn.click(
-        fn=apply_finding,
-        inputs=[test_selector, finding_input, state],
+        inputs=[patient_input],
         outputs=outputs,
     )
 
