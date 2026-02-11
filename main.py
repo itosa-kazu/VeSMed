@@ -125,14 +125,9 @@ def main():
             done_tests.append(test_name)
             patient_text = engine.update_patient_text(patient_text, test_name, result)
 
-        # Step 1: クエリ整理
-        print("\nクエリ整理中...")
-        rewritten = engine.rewrite_query(patient_text)
-        print(f"  整理済み: {rewritten[:100]}...")
-
-        # Step 2: ベクトル検索
-        print("ベクトル検索中...")
-        candidates = engine.search_diseases(rewritten)
+        # Step 1+2: ベクトル検索（生テキスト直接embed、LLM rewrite不要）
+        print("\nベクトル検索中...")
+        candidates = engine.search_diseases(patient_text)
 
         # Step 3: 先験確率計算
         candidates = engine.compute_priors(candidates)

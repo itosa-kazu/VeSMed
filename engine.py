@@ -102,6 +102,10 @@ class VeSMedEngine:
         self.risk_embs = {}  # test_name → np.array (4096,)
         self._compute_risk_embeddings()
 
+        # 検査名embedding（done_tests検出用）: test_name → normalized np.array
+        self.test_name_embs = {}
+        self._compute_test_name_embeddings()
+
         # 最後のクエリembedding（rank_testsでrisk_relevance計算に使用）
         self._last_query_embedding = None
 
@@ -487,6 +491,49 @@ class VeSMedEngine:
         print(f"[Risk] {len(self.risk_embs)}検査のリスクembedding計算・キャッシュ完了")
 
     # ----------------------------------------------------------------
+    # 検査名embedding計算（done_tests検出用、起動時に1回）
+    # ----------------------------------------------------------------
+    def _compute_test_name_embeddings(self):
+        """
+        全検査名をembeddingし、患者テキストとのcos類似度で
+        既実施検査を検出するために使う。キャッシュあり。
+        """
+        cache_file = os.path.join(DATA_DIR, "test_name_embs.npz")
+        all_names = sorted(self.test_db.keys())
+        if not all_names:
+            return
+
+        # キャッシュチェック
+        if os.path.exists(cache_file):
+            data = np.load(cache_file, allow_pickle=True)
+            cached_names = list(data["test_names"])
+            if cached_names == all_names:
+                for i, name in enumerate(all_names):
+                    self.test_name_embs[name] = data["embeddings"][i]
+                print(f"[TestNameEmb] キャッシュから{len(self.test_name_embs)}件読込")
+                return
+
+        # embedding計算
+        embs = self._batch_embed(all_names)
+        if embs is None:
+            print("[TestNameEmb] embedding失敗")
+            return
+
+        norms = np.linalg.norm(embs, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        embs_normed = embs / norms
+
+        for i, name in enumerate(all_names):
+            self.test_name_embs[name] = embs_normed[i]
+
+        np.savez(
+            cache_file,
+            embeddings=embs_normed,
+            test_names=np.array(all_names, dtype=object),
+        )
+        print(f"[TestNameEmb] {len(self.test_name_embs)}件のembedding計算・キャッシュ完了")
+
+    # ----------------------------------------------------------------
     # LLM呼び出し（リトライ + フォールバック）
     # ----------------------------------------------------------------
     def _llm_call(self, messages, temperature=0.1, max_tokens=65536):
@@ -522,144 +569,34 @@ class VeSMedEngine:
     # ----------------------------------------------------------------
     # Step 1: クエリ整理（患者情報 → 標準化医学テキスト）
     # ----------------------------------------------------------------
-    def rewrite_query(self, patient_text: str) -> str:
-        """患者情報をLLMで標準的な医学用語に整理する"""
-        return self._llm_call(
-            max_tokens=1024,
-            messages=[
-                {"role": "system", "content": (
-                    "あなたは経験豊富な日本の臨床医です。\n"
-                    "患者情報を受け取り、標準的な医学用語で簡潔に整理してください。\n"
-                    "ルール：\n"
-                    "- 入力情報にない情報は絶対に追加しないこと\n"
-                    "- 標準的な医学用語への変換と構造化のみ行うこと\n"
-                    "- 年齢、性別、主訴、現病歴、既往歴、身体所見、バイタルサインの順で整理\n"
-                    "- 200-400字程度で出力\n"
-                    "- 説明や前置きは不要、整理されたテキストのみ出力"
-                )},
-                {"role": "user", "content": patient_text},
-            ],
-        )
-
-    # ----------------------------------------------------------------
-    # Step 1.5: 患者テキストから既実施検査・所見を抽出
-    # ----------------------------------------------------------------
-    def extract_done_tests(self, patient_text: str) -> list:
+    def detect_done_tests(self, patient_text: str, threshold: float = 0.5) -> list:
         """
-        患者テキストから既に実施済みの検査とその所見を抽出する。
-        返り値: [{"test_name": str, "finding": str}, ...]
+        患者テキストをembeddingし、全検査名embeddingとのcos類似度で
+        テキスト中に言及されている検査を検出する。LLM不要。
+
+        返り値: 検出された検査名リスト ["白血球数", "CRP", ...]
         """
-        content = self._llm_call(
-            max_tokens=2048,
-            messages=[
-                {"role": "system", "content": (
-                    "あなたは経験豊富な日本の臨床医です。\n"
-                    "患者情報テキストから、既に実施済みの検査・画像・手技とその結果を抽出してください。\n"
-                    "ルール：\n"
-                    "- テキストに明示的に記載されている検査のみ抽出すること\n"
-                    "- 推測で検査を追加しないこと\n"
-                    "- 身体診察の所見（聴診、触診など）も含めること\n"
-                    "- バイタルサイン（体温、血圧、心拍数、呼吸数、SpO2）は1つにまとめること\n"
-                    "- 出力はJSONのみ。説明文やマークダウンは不要。最初の文字は [ にすること。\n"
-                    "- 簡潔に。各項目のfindingは20字以内。"
-                )},
-                {"role": "user", "content": (
-                    f"以下の患者情報から既実施の検査と所見を抽出してください。\n\n"
-                    f"{patient_text}\n\n"
-                    f'出力形式: [{{"test_name": "検査名", "finding": "所見"}}, ...]'
-                )},
-            ],
-        )
-
-        import re
-        match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", content, re.DOTALL)
-        if match:
-            content = match.group(1).strip()
-        start = content.find("[")
-        if start > 0:
-            content = content[start:]
-        content = re.sub(r",\s*([}\]])", r"\1", content)
-
-        # 途中で切れたJSONの修復: 未閉じの括弧を補完
-        open_braces = content.count("{") - content.count("}")
-        open_brackets = content.count("[") - content.count("]")
-        if open_braces > 0 or open_brackets > 0:
-            # 最後の不完全なオブジェクトを除去
-            last_complete = content.rfind("}")
-            if last_complete > 0:
-                content = content[:last_complete + 1]
-            content += "]" * max(0, open_brackets)
-
-        try:
-            results = json.loads(content)
-            if isinstance(results, list):
-                return results
-        except json.JSONDecodeError:
-            pass
-        return []
-
-    # ----------------------------------------------------------------
-    # Step 1.6: 既実施検査の名寄せ（LLMで照合）
-    # ----------------------------------------------------------------
-    def normalize_done_tests(self, done_tests: list, candidates: list = None) -> list:
-        """
-        extract_done_testsの出力を、tests.jsonlの検査名に名寄せする。
-        done_tests: [{"test_name": "血液検査(WBC)", "finding": "16000"}, ...]
-        返り値: 名寄せ済みの検査名リスト ["白血球数", "CRP", ...]
-        """
-        if not done_tests:
+        if not self.test_name_embs:
             return []
 
-        db_test_names = set(self.test_names)
-        if not db_test_names:
-            return [d["test_name"] for d in done_tests]
-
-        done_str = "\n".join(f"- {d['test_name']}: {d.get('finding', '')}" for d in done_tests)
-        db_str = "\n".join(f"- {n}" for n in sorted(db_test_names))
-
-        content = self._llm_call(
-            messages=[
-                {"role": "system", "content": (
-                    "あなたは臨床検査の専門家です。\n"
-                    "【タスク】患者から抽出された既実施検査を、データベースの検査名に照合してください。\n"
-                    "ルール：\n"
-                    "- 既実施検査の各項目について、データベース検査名リストの中で同一または包含関係にあるものを全て列挙\n"
-                    "- 例: 「血液検査(WBC)」→「白血球数」「白血球分画」\n"
-                    "- 例: 「身体診察(頭頸部)」→「咽頭所見」「項部硬直」「結膜所見」\n"
-                    "- 例: 「バイタルサイン」→「発熱（37.5℃以上）」「血圧測定」\n"
-                    "- 該当なしの場合はスキップ\n"
-                    "- 出力はJSON配列のみ。説明不要。最初の文字は [ にすること。"
-                )},
-                {"role": "user", "content": (
-                    f"【既実施検査】\n{done_str}\n\n"
-                    f"【データベース検査名リスト】\n{db_str}\n\n"
-                    f'出力形式: ["検査名1", "検査名2", ...]'
-                )},
-            ],
+        # 患者テキストをembed（_last_query_embeddingとは別：こちらは検査名マッチ用）
+        resp = self.embed_client.embeddings.create(
+            model=EMBEDDING_MODEL,
+            input=[patient_text],
         )
+        pt_emb = np.array(resp.data[0].embedding, dtype=np.float32)
+        pt_norm = np.linalg.norm(pt_emb)
+        if pt_norm == 0:
+            return []
+        pt_emb = pt_emb / pt_norm
 
-        import re
-        match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", content, re.DOTALL)
-        if match:
-            content = match.group(1).strip()
-        start = content.find("[")
-        if start > 0:
-            content = content[start:]
-        content = re.sub(r",\s*\]", "]", content)
-
-        # 途中で切れたJSONの修復
-        if content.count("[") > content.count("]"):
-            last_quote = content.rfind('"')
-            if last_quote > 0:
-                content = content[:last_quote + 1] + "]"
-
-        try:
-            results = json.loads(content)
-            if isinstance(results, list):
-                return [r for r in results if r in db_test_names]
-        except json.JSONDecodeError:
-            pass
-        return [d["test_name"] for d in done_tests]
+        # 全検査名とのcos類似度
+        done = []
+        for tname, temb in self.test_name_embs.items():
+            sim = float(np.dot(pt_emb, temb))
+            if sim >= threshold:
+                done.append(tname)
+        return done
 
     # ----------------------------------------------------------------
     # Step 2: ベクトル検索 → 候補疾患
@@ -694,32 +631,12 @@ class VeSMedEngine:
                 })
         return candidates
 
-    def search_diseases(self, rewritten_text: str, original_text: str = None) -> list:
+    def search_diseases(self, patient_text: str) -> list:
         """
-        全疾患検索: 書き換え文と原文の両方で検索し、結果をマージ。
-        各疾患は高い方の類似度を採用。top-k制限なし（全疾患を返す）。
-
+        患者テキストで全疾患ベクトル検索（LLM rewrite不要、生テキストを直接embed）。
         返り値: [{"disease_name": str, "similarity": float, "category": str}, ...]
         """
-        # 書き換え文で全件検索
-        candidates_rewritten = self._embed_and_search(rewritten_text)
-
-        # 原文でも検索してマージ
-        if original_text and original_text.strip() != rewritten_text.strip():
-            candidates_original = self._embed_and_search(original_text)
-        else:
-            candidates_original = []
-
-        # マージ: 疾患名をキーに、高い方の類似度を採用
-        merged = {}
-        for c in candidates_rewritten + candidates_original:
-            name = c["disease_name"]
-            if name not in merged or c["similarity"] > merged[name]["similarity"]:
-                merged[name] = c
-
-        # 類似度降順でソート（全疾患を返す）
-        result = sorted(merged.values(), key=lambda x: x["similarity"], reverse=True)
-        return result
+        return self._embed_and_search(patient_text)
 
     # ----------------------------------------------------------------
     # Step 3: Softmax → 先験確率

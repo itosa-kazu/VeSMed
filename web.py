@@ -8,7 +8,6 @@ VeSMed - Web UI (Gradio)
   3. 繰り返し
 """
 
-from concurrent.futures import ThreadPoolExecutor
 import gradio as gr
 import pandas as pd
 from engine import VeSMedEngine
@@ -41,37 +40,24 @@ def analyze_patient(patient_text, state):
 
     eng = init_engine()
 
-    # rewrite_query と extract_done_tests は独立 → 並行実行で ~40秒短縮
     t0 = _time.time()
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        future_rewrite = ex.submit(eng.rewrite_query, patient_text)
-        future_done = ex.submit(eng.extract_done_tests, patient_text)
-        rewritten = future_rewrite.result()
-        raw_done = future_done.result()
+    # embedding検索（LLM不要: 生テキスト直接embed）
+    candidates = eng.search_diseases(patient_text)
     t1 = _time.time()
-    print(f"[TIMING] LLM (rewrite+extract): {t1-t0:.1f}s")
-
-    candidates = eng.search_diseases(rewritten, original_text=patient_text)
-    t2 = _time.time()
-    print(f"[TIMING] search_diseases (embed+chromadb): {t2-t1:.1f}s")
+    print(f"[TIMING] search_diseases: {t1-t0:.1f}s")
 
     candidates = eng.compute_priors(candidates)
-    t3 = _time.time()
-    print(f"[TIMING] compute_priors: {t3-t2:.1f}s")
 
-    # 名寄せ（candidates依存のため並行化できない）
-    done_tests = eng.normalize_done_tests(raw_done, candidates)
-    t4 = _time.time()
-    print(f"[TIMING] normalize_done_tests: {t4-t3:.1f}s")
+    # 既実施検査検出（embedding類似度ベース、LLM不要）
+    done_tests = eng.detect_done_tests(patient_text)
+    t2 = _time.time()
+    print(f"[TIMING] detect_done_tests: {t2-t1:.1f}s")
 
     ranked_tests = eng.rank_tests(candidates, done_tests=done_tests)
-    t5 = _time.time()
-    print(f"[TIMING] rank_tests: {t5-t4:.1f}s")
-
     available_tests = eng.find_matching_tests(candidates, done_tests=done_tests)
-    t6 = _time.time()
-    print(f"[TIMING] find_matching_tests: {t6-t5:.1f}s")
-    print(f"[TIMING] === TOTAL: {t6-t0:.1f}s ===")
+    t3 = _time.time()
+    print(f"[TIMING] rank_tests+find: {t3-t2:.1f}s")
+    print(f"[TIMING] === TOTAL: {t3-t0:.1f}s ===")
 
     new_state = {
         "patient_text": patient_text,
@@ -139,8 +125,7 @@ def apply_finding(test_name, finding_text, state):
     )
     updated_text = f"{patient_text}\n\n既実施検査結果:\n{findings_text}"
 
-    rewritten = eng.rewrite_query(updated_text)
-    candidates = eng.search_diseases(rewritten, original_text=updated_text)
+    candidates = eng.search_diseases(updated_text)
     candidates = eng.compute_priors(candidates)
     ranked_tests = eng.rank_tests(candidates, done_tests=done_tests)
     available_tests = eng.find_matching_tests(candidates, done_tests=done_tests)
