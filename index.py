@@ -70,18 +70,35 @@ def build_index():
 
     print(f"Embedding対象: {len(texts)}件")
 
-    # Embedding取得（バッチで処理、API制限を考慮して分割）
+    # Embedding取得（バッチで処理、並行実行で高速化）
     client = OpenAI(api_key=EMBEDDING_API_KEY, base_url=EMBEDDING_BASE_URL)
     batch_size = 20
-    all_embeddings = []
+    max_workers = 5  # 並行バッチ数
 
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    batches = []
     for start in range(0, len(texts), batch_size):
         end = min(start + batch_size, len(texts))
-        batch_texts = texts[start:end]
-        print(f"  Embedding [{start + 1}-{end}/{len(texts)}] ...", end="", flush=True)
+        batches.append((start, end, texts[start:end]))
+
+    all_embeddings = [None] * len(texts)
+
+    def embed_batch(batch_info):
+        start, end, batch_texts = batch_info
         embeddings = get_embeddings(client, batch_texts)
-        all_embeddings.extend(embeddings)
-        print(" OK")
+        return start, embeddings
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(embed_batch, b): b for b in batches}
+        for future in as_completed(futures):
+            start, embeddings = future.result()
+            batch_info = futures[future]
+            end = batch_info[1]
+            for i, emb in enumerate(embeddings):
+                all_embeddings[start + i] = emb
+            print(f"  Embedding [{start + 1}-{end}/{len(texts)}] ... OK")
+
+    all_embeddings = [e for e in all_embeddings if e is not None]
 
     # ChromaDBに格納
     os.makedirs(CHROMA_DIR, exist_ok=True)
