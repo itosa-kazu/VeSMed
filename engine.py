@@ -405,7 +405,7 @@ class VeSMedEngine:
                     time.sleep(2 ** attempt)
             return start_idx, None
 
-        max_workers = 10
+        max_workers = 40
         print(f"[2Q] {total_batches}バッチを{max_workers}並行でembedding開始")
         failed = False
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -664,6 +664,14 @@ class VeSMedEngine:
             "フェリチン": "フェリチン", "ferritin": "フェリチン",
             "乳酸": "乳酸", "lactate": "乳酸",
             "アンモニア": "アンモニア", "nh3": "アンモニア",
+            # バイタルサイン
+            "体温": "体温", "bt": "体温",
+            "血圧": "収縮期血圧", "sbp": "収縮期血圧", "bp": "収縮期血圧",
+            "dbp": "拡張期血圧",
+            "脈拍": "脈拍数", "心拍": "脈拍数", "心拍数": "脈拍数",
+            "hr": "脈拍数", "pulse": "脈拍数",
+            "呼吸数": "呼吸数", "rr": "呼吸数",
+            "spo2": "SpO2", "酸素飽和度": "SpO2",
         }
         for alias, canonical in manual_aliases.items():
             if canonical in self.reference_ranges:
@@ -671,28 +679,35 @@ class VeSMedEngine:
 
         print(f"[RefRange] {len(self.reference_ranges)}検査の基準範囲読込、{len(self.range_alias)}エイリアス")
 
+    # バイタルサイン臨床用語マッピング（embedding空間でより正確にマッチ）
+    VITAL_SIGN_TERMS = {
+        "体温": {"上昇": "発熱", "低下": "低体温", "正常": "体温 正常 異常なし"},
+        "収縮期血圧": {"上昇": "高血圧", "低下": "低血圧", "正常": "血圧 正常 異常なし"},
+        "拡張期血圧": {"上昇": "拡張期高血圧", "低下": "拡張期低血圧", "正常": "血圧 正常 異常なし"},
+        "脈拍数": {"上昇": "頻脈", "低下": "徐脈", "正常": "脈拍 正常 異常なし"},
+        "呼吸数": {"上昇": "頻呼吸", "低下": "徐呼吸", "正常": "呼吸数 正常 異常なし"},
+        "SpO2": {"上昇": "SpO2 正常 異常なし", "低下": "低酸素血症", "正常": "SpO2 正常 異常なし"},
+    }
+
     def _annotate_with_ranges(self, result_lines: list) -> list:
         """
         基準範囲テーブルで数値結果をアノテーション（確定的、LLM不要）。
 
-        "WBC 18000" → "WBC 18000（白血球数 基準3300-8600/µL、高値）"
-        "Na 140"    → "Na 140（ナトリウム 基準138-145mEq/L、正常）"
-        "γ-GTP正常値" → "γ-GTP正常値"（数値なし、そのまま）
-
         数値抽出 + エイリアスマッチ → 基準範囲参照 → 方向語付与。
+        バイタルサインは臨床用語に変換（発熱、低血圧、頻脈等）。
         """
         if not self.reference_ranges:
             return result_lines
 
         annotated = []
         for line in result_lines:
-            # 数値抽出
-            num_match = re.search(r'(\d+\.?\d*)', line)
+            # 数値抽出（カンマ区切りに対応: 14,200 → 14200）
+            num_match = re.search(r'(\d[\d,]*\.?\d*)', line)
             if not num_match:
                 annotated.append(line)
                 continue
 
-            value = float(num_match.group(1))
+            value = float(num_match.group(1).replace(',', ''))
             text_part = line[:num_match.start()].strip()
             # テキスト部分が空なら行全体から数値を除いた部分
             if not text_part:
@@ -705,10 +720,10 @@ class VeSMedEngine:
             if text_lower in self.range_alias:
                 matched_name = self.range_alias[text_lower]
             else:
-                # 部分一致（テキスト内にエイリアスが含まれるか）
+                # 部分一致（3文字以上のエイリアスのみ、短いエイリアスの誤マッチ防止）
                 best_len = 0
                 for alias, canonical in self.range_alias.items():
-                    if alias in text_lower and len(alias) > best_len:
+                    if len(alias) >= 3 and alias in text_lower and len(alias) > best_len:
                         matched_name = canonical
                         best_len = len(alias)
 
@@ -718,9 +733,8 @@ class VeSMedEngine:
 
             ref = self.reference_ranges[matched_name]
             lower, upper = ref["lower"], ref["upper"]
-            unit = ref.get("unit", "")
 
-            # 方向判定（極性軸が確実に拾える方向語を使用）
+            # 方向判定
             if value > upper:
                 direction = "上昇"
             elif value < lower:
@@ -728,7 +742,13 @@ class VeSMedEngine:
             else:
                 direction = "正常"
 
-            annotation = f"{matched_name} {direction}" if direction != "正常" else f"{matched_name} 正常 異常なし"
+            # バイタルサインは臨床用語に変換（embedding精度向上）
+            if matched_name in self.VITAL_SIGN_TERMS:
+                annotation = self.VITAL_SIGN_TERMS[matched_name][direction]
+            elif direction != "正常":
+                annotation = f"{matched_name} {direction}"
+            else:
+                annotation = f"{matched_name} 正常 異常なし"
             annotated.append(annotation)
 
         return annotated
@@ -822,6 +842,9 @@ class VeSMedEngine:
         l_norms[l_norms == 0] = 1.0
         line_embs = line_embs / l_norms
 
+        # sim_matrix列平均（テスト別の背景関連度）
+        col_means = self.sim_matrix.mean(axis=0)  # (N_tests,)
+
         # 各結果行を処理
         for k in range(len(result_lines)):
             lemb = line_embs[k]
@@ -846,11 +869,16 @@ class VeSMedEngine:
                 print(f"  [結果] {orig} → {best_name} (cos={match_sim:.3f}) pol={pol:+.4f} → {expected}")
 
             # sim_matrix × sign で全候補疾患の重みを更新
+            # 列平均を差し引き: 平均を超える関連度の分だけ更新
+            # → 無関係な検査結果（Na正常がAMIに影響等）を自動排除
+            bg = float(col_means[best_j])
             for c in candidates:
                 d_idx = self.disease_idx.get(c['disease_name'])
                 if d_idx is not None:
                     sim_dt = float(self.sim_matrix[d_idx, best_j])
-                    c['similarity'] *= float(np.exp(sign * sim_dt))
+                    excess = max(0.0, sim_dt - bg)
+                    if excess > 0:
+                        c['similarity'] *= float(np.exp(sign * excess))
 
         # 降順ソート
         candidates.sort(key=lambda x: x['similarity'], reverse=True)

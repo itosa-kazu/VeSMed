@@ -30,6 +30,7 @@ def init_engine():
 def analyze_patient(symptoms_text, results_text, mode):
     """症状と検査結果を分離して分析（Option 3）"""
     import time as _time
+    from concurrent.futures import ThreadPoolExecutor
     if not symptoms_text.strip():
         return (
             "症状を入力してください。",
@@ -49,31 +50,36 @@ def analyze_patient(symptoms_text, results_text, mode):
 
     candidates = eng.compute_priors(candidates)
 
-    # Step 2: 検査結果で重み更新（Option 3）
+    # Step 2+3: 検査結果更新 と novelty計算を並行実行
     result_lines = [l.strip() for l in results_text.split('\n') if l.strip()]
-    if result_lines:
-        candidates = eng.update_from_results(
-            candidates, result_lines,
-            symptoms=symptoms_text, mode=engine_mode,
-        )
-    t2 = _time.time()
-    print(f"[TIMING] update_from_results ({engine_mode}): {t2-t1:.1f}s")
-
-    # Step 3: novelty計算（症状+結果の全テキスト）
     full_text = symptoms_text
     if result_lines:
         full_text += '\n' + '\n'.join(result_lines)
-    novelty = eng.compute_novelty(full_text)
-    t3 = _time.time()
-    print(f"[TIMING] compute_novelty: {t3-t2:.1f}s")
 
-    # Step 4: 検査ランキング
+    import copy
+    cands_copy = copy.deepcopy(candidates)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        # update_from_results と compute_novelty は独立（並行可能）
+        fut_update = executor.submit(
+            eng.update_from_results, cands_copy, result_lines,
+            symptoms_text, engine_mode,
+        ) if result_lines else None
+        fut_novelty = executor.submit(eng.compute_novelty, full_text)
+
+        novelty = fut_novelty.result()
+        candidates = fut_update.result() if fut_update else candidates
+
+    t2 = _time.time()
+    print(f"[TIMING] update+novelty parallel ({engine_mode}): {t2-t1:.1f}s")
+
+    # Step 4: 検査ランキング（CPU演算のみ、高速）
     ranked_tests = eng.rank_tests(candidates, novelty=novelty)
     critical_tests = eng.rank_tests_critical(candidates, novelty=novelty)
     confirm_tests = eng.rank_tests_confirm(candidates, novelty=novelty)
-    t4 = _time.time()
-    print(f"[TIMING] rank_tests+critical+confirm: {t4-t3:.1f}s")
-    print(f"[TIMING] === TOTAL ({engine_mode}): {t4-t0:.1f}s ===")
+    t3 = _time.time()
+    print(f"[TIMING] rank_tests+critical+confirm: {t3-t2:.1f}s")
+    print(f"[TIMING] === TOTAL ({engine_mode}): {t3-t0:.1f}s ===")
 
     n_results = len(result_lines)
     mode_label = "LLM注釈" if engine_mode == "llm" else "高速"
