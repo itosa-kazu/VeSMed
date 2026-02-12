@@ -6,6 +6,7 @@ VeSMed - 核心エンジン
 import json
 import math
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
@@ -104,6 +105,19 @@ class VeSMedEngine:
         # 検査findings embedding（novelty計算用）: 正規化済み (N_tests, dim)
         self.test_findings_embs = None
         self._load_test_findings_embs()
+
+        # 検査名embedding（novelty二重チャネル用）: 正規化済み (N_tests, dim)
+        self.test_name_embs = None
+        self._compute_test_name_embs()
+
+        # 極性軸（正常←→異常の差分ベクトル、Option 3用）
+        self.polarity_axis = None
+        self._compute_polarity_axis()
+
+        # 基準範囲テーブル + エイリアスマップ
+        self.reference_ranges = {}  # canonical_test_name → {lower, upper, unit}
+        self.range_alias = {}       # alias (lowercase) → canonical_test_name
+        self._load_reference_ranges()
 
         # 最後のクエリembedding（rank_testsでrisk_relevance計算に使用）
         self._last_query_embedding = None
@@ -509,6 +523,340 @@ class VeSMedEngine:
             print("[TestFindingsEmb] なし（sim_matrixキャッシュ更新が必要）")
 
     # ----------------------------------------------------------------
+    # 検査名embedding計算（novelty二重チャネル用）
+    # ----------------------------------------------------------------
+    def _compute_test_name_embs(self):
+        """
+        検査名そのものをembedし、novelty計算の第2チャネルとして使う。
+        findings_descriptionは臨床記述が支配的で「直接ビリルビン正常値」のような
+        短い入力とのcos類似度が低い（~0.58）。検査名embeddingなら~0.80。
+        二重チャネル: max(sim_findings, sim_name) でnoveltyを計算。
+        """
+        cache_file = os.path.join(DATA_DIR, "test_name_embs.npz")
+
+        if not self.test_names:
+            return
+
+        # キャッシュチェック
+        if os.path.exists(cache_file):
+            data = np.load(cache_file, allow_pickle=True)
+            cached_names = list(data["test_names"])
+            if cached_names == self.test_names:
+                self.test_name_embs = data["embeddings"]
+                print(f"[TestNameEmb] キャッシュから{self.test_name_embs.shape[0]}件読込")
+                return
+
+        # 検査名をバッチembedding
+        embs = self._batch_embed(self.test_names)
+        if embs is None:
+            print("[TestNameEmb] embedding失敗")
+            return
+
+        # 正規化
+        norms = np.linalg.norm(embs, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        self.test_name_embs = embs / norms
+
+        # キャッシュ保存
+        np.savez(
+            cache_file,
+            embeddings=self.test_name_embs,
+            test_names=np.array(self.test_names, dtype=object),
+        )
+        print(f"[TestNameEmb] {self.test_name_embs.shape[0]}件計算・キャッシュ完了")
+
+    # ----------------------------------------------------------------
+    # 極性軸計算（正常←→異常、Option 3用）
+    # ----------------------------------------------------------------
+    def _compute_polarity_axis(self):
+        """
+        正常/異常の差分ベクトル軸を計算。2Qと同じパターン。
+
+        polarity_axis = normalize(abnormal_emb - normal_emb)
+        polarity = dot(text_emb, polarity_axis)
+          > 0: 異常（陽性、上昇、検出）
+          < 0: 正常（陰性、基準範囲内、異常なし）
+
+        定性的テキストで完璧に分離（検証済み）。
+        数値テキストは未対応（Step 2: 基準範囲テーブルで解決予定）。
+        """
+        normal_anchor = '検査値は基準範囲内であり正常である。異常所見を認めない。陰性。検出されず。'
+        abnormal_anchor = '検査値は基準範囲を逸脱し異常である。異常所見あり。陽性。上昇。低下。検出。'
+
+        try:
+            resp = self.embed_client.embeddings.create(
+                model=EMBEDDING_MODEL,
+                input=[normal_anchor, abnormal_anchor],
+            )
+            embs = np.array([d.embedding for d in resp.data], dtype=np.float32)
+            norms = np.linalg.norm(embs, axis=1, keepdims=True)
+            embs = embs / norms
+
+            axis = embs[1] - embs[0]  # abnormal - normal
+            axis_norm = np.linalg.norm(axis)
+            if axis_norm > 0:
+                axis = axis / axis_norm
+
+            self.polarity_axis = axis
+            print(f"[Polarity] 極性軸計算完了 (dim={len(axis)})")
+        except Exception as e:
+            print(f"[Polarity] 極性軸計算失敗: {e}")
+
+    # ----------------------------------------------------------------
+    # Option 3: 検査結果による疾患重み更新
+    # ----------------------------------------------------------------
+    # ----------------------------------------------------------------
+    # 基準範囲テーブル読込 + エイリアスマップ構築
+    # ----------------------------------------------------------------
+    def _load_reference_ranges(self):
+        """
+        reference_ranges.json を読み込み、テスト名エイリアスマップを構築。
+        エイリアスマップ: 略称/日本語名 → 正規テスト名（大文字小文字不問）
+        """
+        ref_file = os.path.join(DATA_DIR, "reference_ranges.json")
+        if not os.path.exists(ref_file):
+            print("[RefRange] reference_ranges.json なし")
+            return
+
+        with open(ref_file, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+
+        # 数値検査のみ保持
+        for name, ref in raw.items():
+            if ref is not None:
+                self.reference_ranges[name] = ref
+
+        # エイリアスマップ構築
+        # 1. テスト名を分解: "ナトリウム (Na)" → ["ナトリウム", "Na"]
+        for name in self.reference_ranges:
+            tokens = re.split(r'[（()\s/・]+', name)
+            for tok in tokens:
+                tok = tok.strip('）) ')
+                if tok:
+                    self.range_alias[tok.lower()] = name
+            # フル名もエイリアスに
+            self.range_alias[name.lower()] = name
+
+        # 2. よく使われる略称を手動追加
+        manual_aliases = {
+            "wbc": "白血球数", "白血球": "白血球数",
+            "rbc": "赤血球数", "赤血球": "赤血球数",
+            "hb": "ヘモグロビン", "hgb": "ヘモグロビン",
+            "ht": "ヘマトクリット", "hct": "ヘマトクリット",
+            "plt": "血小板数", "血小板": "血小板数",
+            "t-bil": "総ビリルビン", "tb": "総ビリルビン",
+            "d-bil": "直接ビリルビン", "db": "直接ビリルビン",
+            "bs": "血糖 (随時/空腹時)", "glu": "血糖 (随時/空腹時)",
+            "血糖": "血糖 (随時/空腹時)", "glucose": "血糖 (随時/空腹時)",
+            "pct": "プロカルシトニン (PCT)",
+            "pt-inr": "PT-INR (プロトロンビン時間)",
+            "inr": "PT-INR (プロトロンビン時間)",
+            "aptt": "APTT (活性化部分トロンボプラスチン時間)",
+            "spo2": "動脈血酸素飽和度 (SpO2)",
+            "bnp": "BNP", "tsh": "TSH",
+            "fe": "血清鉄 (Fe)", "鉄": "血清鉄 (Fe)",
+            "esr": "赤沈 (ESR)", "赤沈": "赤沈 (ESR)",
+            "hba1c": "HbA1c", "a1c": "HbA1c",
+            "ldh": "LDH", "alp": "ALP",
+            "ck": "CK (CPK)", "cpk": "CK (CPK)",
+            "bun": "尿素窒素 (BUN)",
+            "rf": "リウマトイド因子 (RF)",
+            "フェリチン": "フェリチン", "ferritin": "フェリチン",
+            "乳酸": "乳酸", "lactate": "乳酸",
+            "アンモニア": "アンモニア", "nh3": "アンモニア",
+        }
+        for alias, canonical in manual_aliases.items():
+            if canonical in self.reference_ranges:
+                self.range_alias[alias.lower()] = canonical
+
+        print(f"[RefRange] {len(self.reference_ranges)}検査の基準範囲読込、{len(self.range_alias)}エイリアス")
+
+    def _annotate_with_ranges(self, result_lines: list) -> list:
+        """
+        基準範囲テーブルで数値結果をアノテーション（確定的、LLM不要）。
+
+        "WBC 18000" → "WBC 18000（白血球数 基準3300-8600/µL、高値）"
+        "Na 140"    → "Na 140（ナトリウム 基準138-145mEq/L、正常）"
+        "γ-GTP正常値" → "γ-GTP正常値"（数値なし、そのまま）
+
+        数値抽出 + エイリアスマッチ → 基準範囲参照 → 方向語付与。
+        """
+        if not self.reference_ranges:
+            return result_lines
+
+        annotated = []
+        for line in result_lines:
+            # 数値抽出
+            num_match = re.search(r'(\d+\.?\d*)', line)
+            if not num_match:
+                annotated.append(line)
+                continue
+
+            value = float(num_match.group(1))
+            text_part = line[:num_match.start()].strip()
+            # テキスト部分が空なら行全体から数値を除いた部分
+            if not text_part:
+                text_part = re.sub(r'[\d.]+', '', line).strip()
+
+            # エイリアスマッチ（最長一致）
+            matched_name = None
+            text_lower = text_part.lower().strip()
+            # 完全一致 → 前方一致 → 部分一致
+            if text_lower in self.range_alias:
+                matched_name = self.range_alias[text_lower]
+            else:
+                # 部分一致（テキスト内にエイリアスが含まれるか）
+                best_len = 0
+                for alias, canonical in self.range_alias.items():
+                    if alias in text_lower and len(alias) > best_len:
+                        matched_name = canonical
+                        best_len = len(alias)
+
+            if matched_name is None:
+                annotated.append(line)
+                continue
+
+            ref = self.reference_ranges[matched_name]
+            lower, upper = ref["lower"], ref["upper"]
+            unit = ref.get("unit", "")
+
+            # 方向判定（極性軸が確実に拾える方向語を使用）
+            if value > upper:
+                direction = "上昇"
+            elif value < lower:
+                direction = "低下"
+            else:
+                direction = "正常"
+
+            annotation = f"{matched_name} {direction}" if direction != "正常" else f"{matched_name} 正常 異常なし"
+            annotated.append(annotation)
+
+        return annotated
+
+    def _annotate_with_llm(self, symptoms: str, result_lines: list) -> list:
+        """
+        LLMで検査結果を文脈付きアノテーション（患者背景を考慮）。
+
+        症状テキスト + 結果行 → LLMが臨床的解釈を付与。
+        「正常なのに異常」「薬の影響」等の文脈依存判断が可能。
+        """
+        if not result_lines:
+            return result_lines
+
+        results_text = "\n".join(f"- {r}" for r in result_lines)
+        prompt = f"""あなたは経験豊富な臨床医です。
+患者情報を踏まえ各検査結果の臨床的意味を1行で記述してください。
+
+ルール:
+- この患者にとっての解釈で判定すること
+- 薬の影響で予想される値は「治療域」「薬効による」等と明記
+- 異常なら「上昇」「低下」「減少」「増加」等の方向語を含める
+- 正常なら「正常」「異常なし」「陰性」等を含める
+- 「正常範囲内」「基準範囲内」等の表現を使わないこと
+- 各項目は1つの文字列で出力（JSON配列、オブジェクト不可）
+
+患者: {symptoms}
+結果:
+{results_text}
+
+出力例: ["血圧低下（高血圧患者として相対的低血圧）", "CRP上昇（炎症反応あり）", ...]"""
+
+        try:
+            content = self._llm_call([
+                {"role": "system", "content": "JSON配列のみ出力。説明不要。"},
+                {"role": "user", "content": prompt},
+            ])
+            start = content.find("[")
+            end = content.rfind("]") + 1
+            if start >= 0 and end > start:
+                parsed = json.loads(content[start:end])
+                if isinstance(parsed, list) and len(parsed) == len(result_lines):
+                    print(f"  [LLM注釈] {len(parsed)}件変換完了")
+                    return parsed
+        except Exception as e:
+            print(f"  [LLM注釈] 失敗、基準範囲フォールバック: {e}")
+
+        # LLM失敗時は基準範囲でフォールバック
+        return self._annotate_with_ranges(result_lines)
+
+    # ----------------------------------------------------------------
+    # Option 3: 検査結果による疾患重み更新
+    # ----------------------------------------------------------------
+    def update_from_results(self, candidates: list, result_lines: list,
+                            symptoms: str = "", mode: str = "fast") -> list:
+        """
+        Option 3: 検査結果から疾患重みを更新。
+
+        mode:
+          "fast"  — 基準範囲テーブルでアノテーション（確定的、1-2秒）
+          "llm"   — LLMで文脈付きアノテーション（3-5秒、文脈依存）
+
+        初回の症状検索（search_diseases）は固定し、検査結果は
+        sim_matrix × sign(polarity) で重みを乗算更新する。
+
+        返り値: 更新済みcandidatesリスト（similarity更新済み、降順ソート）
+        """
+        if not result_lines or self.polarity_axis is None or self.test_name_embs is None:
+            return candidates
+        if self.sim_matrix is None:
+            return candidates
+
+        # アノテーション（モード別）
+        if mode == "llm" and symptoms:
+            annotated = self._annotate_with_llm(symptoms, result_lines)
+        else:
+            annotated = self._annotate_with_ranges(result_lines)
+
+        # アノテーション済みテキストを一括embed
+        try:
+            resp = self.embed_client.embeddings.create(
+                model=EMBEDDING_MODEL,
+                input=annotated,
+            )
+        except Exception as e:
+            print(f"[Option3] embedding失敗: {e}")
+            return candidates
+
+        line_embs = np.array([d.embedding for d in resp.data], dtype=np.float32)
+        l_norms = np.linalg.norm(line_embs, axis=1, keepdims=True)
+        l_norms[l_norms == 0] = 1.0
+        line_embs = line_embs / l_norms
+
+        # 各結果行を処理
+        for k in range(len(result_lines)):
+            lemb = line_embs[k]
+            orig = result_lines[k]
+            ann = annotated[k]
+
+            # 検査マッチ（test_name_embsとの最大cos類似度）
+            sims = lemb @ self.test_name_embs.T
+            best_j = int(np.argmax(sims))
+            best_name = self.test_names[best_j]
+            match_sim = float(sims[best_j])
+
+            # 極性判定
+            pol = float(lemb @ self.polarity_axis)
+            sign = 1.0 if pol > 0 else -1.0
+            expected = "異常" if sign > 0 else "正常"
+
+            # ログ（アノテーションがあれば表示）
+            if ann != orig:
+                print(f"  [結果] {orig} → [{ann}] → {best_name} (cos={match_sim:.3f}) pol={pol:+.4f} → {expected}")
+            else:
+                print(f"  [結果] {orig} → {best_name} (cos={match_sim:.3f}) pol={pol:+.4f} → {expected}")
+
+            # sim_matrix × sign で全候補疾患の重みを更新
+            for c in candidates:
+                d_idx = self.disease_idx.get(c['disease_name'])
+                if d_idx is not None:
+                    sim_dt = float(self.sim_matrix[d_idx, best_j])
+                    c['similarity'] *= float(np.exp(sign * sim_dt))
+
+        # 降順ソート
+        candidates.sort(key=lambda x: x['similarity'], reverse=True)
+        return candidates
+
+    # ----------------------------------------------------------------
     # LLM呼び出し（リトライ + フォールバック）
     # ----------------------------------------------------------------
     def _llm_call(self, messages, temperature=0.1, max_tokens=65536):
@@ -546,16 +894,27 @@ class VeSMedEngine:
     # ----------------------------------------------------------------
     def compute_novelty(self, patient_text: str) -> np.ndarray:
         """
-        患者テキストを行単位で分割・embeddingし、各検査のfindings_description
-        embeddingとのmax cos類似度から新規性スコアを計算する。
+        患者テキストを行単位で分割・embeddingし、各検査との類似度から
+        新規性スコアを計算する。独立チャネル積方式:
 
-        novelty_j = 1 - max_line cos(line_emb, test_findings_emb_j)
+        ch1: max_line cos(line_emb, test_findings_emb_j)  ← 臨床記述マッチ
+        ch2: max_line cos(line_emb, test_name_emb_j)      ← 検査名マッチ
+        novelty_j = (1 - ch1) × (1 - ch2)
+
+        二つの独立なembeddingチャネルを確率論的に合成。
+        両チャネルとも新規性が残る場合にのみnoveltyが残る。
+        「直接ビリルビン正常値」: ch1=0.58, ch2=0.80 → novelty=0.42×0.20=0.08
+        ハイパーパラメータなし。チャネル追加時は Π(1-sim_ch) に自然拡張。
 
         返り値: (N_tests,) ndarray, 各検査の新規性スコア (0〜1)
         閾値なし、二値判定なし。全てembeddingから連続的に導出。
         """
         n_tests = len(self.test_names)
-        if self.test_findings_embs is None or n_tests == 0:
+        if n_tests == 0:
+            return np.ones(n_tests)
+        has_findings = self.test_findings_embs is not None
+        has_names = self.test_name_embs is not None
+        if not has_findings and not has_names:
             return np.ones(n_tests)
 
         # 患者テキストを行単位で分割（空行除外）
@@ -573,14 +932,16 @@ class VeSMedEngine:
         l_norms[l_norms == 0] = 1.0
         line_embs = line_embs / l_norms
 
-        # (N_lines, N_tests) = line_embs @ test_findings_embs.T
-        sims = line_embs @ self.test_findings_embs.T
+        # 独立チャネル積: novelty = Π_ch (1 - max_line sim_ch)
+        novelty = np.ones(n_tests)
 
-        # 各検査について全行のmax → 最も関連の深い行との類似度
-        max_sims = sims.max(axis=0)  # (N_tests,)
+        if has_findings:
+            sims_findings = line_embs @ self.test_findings_embs.T
+            novelty *= 1.0 - np.clip(sims_findings.max(axis=0), 0.0, 1.0)
 
-        # novelty = 1 - max_sim（既に情報があるほどutilityを下げる）
-        novelty = 1.0 - np.clip(max_sims, 0.0, 1.0)
+        if has_names:
+            sims_names = line_embs @ self.test_name_embs.T
+            novelty *= 1.0 - np.clip(sims_names.max(axis=0), 0.0, 1.0)
 
         return novelty
 

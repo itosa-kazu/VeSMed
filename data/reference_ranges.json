@@ -1,0 +1,954 @@
+{
+ "アルブミン (Alb)": {
+  "lower": 3.8,
+  "upper": 5.2,
+  "unit": "g/dL"
+ },
+ "CK (CPK)": {
+  "lower": 40,
+  "upper": 250,
+  "unit": "U/L"
+ },
+ "網赤血球数": {
+  "lower": 0.8,
+  "upper": 2.0,
+  "unit": "%"
+ },
+ "γ-GTP": {
+  "lower": 10,
+  "upper": 50,
+  "unit": "U/L"
+ },
+ "リパーゼ": {
+  "lower": 13,
+  "upper": 55,
+  "unit": "U/L"
+ },
+ "白血球数": {
+  "lower": 3300,
+  "upper": 8600,
+  "unit": "/µL"
+ },
+ "ALP": {
+  "lower": 38,
+  "upper": 113,
+  "unit": "U/L"
+ },
+ "総ビリルビン": {
+  "lower": 0.2,
+  "upper": 1.2,
+  "unit": "mg/dL"
+ },
+ "白血球分画（好中球/リンパ球/単球/好酸球/好塩基球）": null,
+ "LDH": {
+  "lower": 124,
+  "upper": 222,
+  "unit": "U/L"
+ },
+ "無機リン (P)": {
+  "lower": 2.7,
+  "upper": 4.6,
+  "unit": "mg/dL"
+ },
+ "CK-MB": {
+  "lower": 0,
+  "upper": 25,
+  "unit": "U/L"
+ },
+ "カリウム (K)": {
+  "lower": 3.6,
+  "upper": 4.8,
+  "unit": "mEq/L"
+ },
+ "eGFR": {
+  "lower": 60,
+  "upper": 120,
+  "unit": "mL/min/1.73m²"
+ },
+ "アミラーゼ (血清)": {
+  "lower": 40,
+  "upper": 126,
+  "unit": "U/L"
+ },
+ "コリンエステラーゼ (ChE)": {
+  "lower": 200,
+  "upper": 480,
+  "unit": "U/L"
+ },
+ "尿酸 (UA)": {
+  "lower": 2.0,
+  "upper": 7.0,
+  "unit": "mg/dL"
+ },
+ "カルシウム (Ca)": {
+  "lower": 8.8,
+  "upper": 10.1,
+  "unit": "mg/dL"
+ },
+ "クレアチニン (Cr)": {
+  "lower": 0.4,
+  "upper": 1.1,
+  "unit": "mg/dL"
+ },
+ "AST (GOT)": {
+  "lower": 10,
+  "upper": 40,
+  "unit": "U/L"
+ },
+ "総タンパク (TP)": {
+  "lower": 6.6,
+  "upper": 8.1,
+  "unit": "g/dL"
+ },
+ "血小板数": {
+  "lower": 15,
+  "upper": 35,
+  "unit": "万/µL"
+ },
+ "直接ビリルビン": {
+  "lower": 0.0,
+  "upper": 0.4,
+  "unit": "mg/dL"
+ },
+ "ナトリウム (Na)": {
+  "lower": 138,
+  "upper": 145,
+  "unit": "mEq/L"
+ },
+ "赤血球数": {
+  "lower": 380,
+  "upper": 570,
+  "unit": "万/µL"
+ },
+ "クロール (Cl)": {
+  "lower": 101,
+  "upper": 108,
+  "unit": "mEq/L"
+ },
+ "ALT (GPT)": {
+  "lower": 5,
+  "upper": 45,
+  "unit": "U/L"
+ },
+ "ヘモグロビン": {
+  "lower": 11.5,
+  "upper": 17.5,
+  "unit": "g/dL"
+ },
+ "尿素窒素 (BUN)": {
+  "lower": 8,
+  "upper": 20,
+  "unit": "mg/dL"
+ },
+ "ヘマトクリット": {
+  "lower": 35,
+  "upper": 50,
+  "unit": "%"
+ },
+ "血清鉄 (Fe)": {
+  "lower": 54,
+  "upper": 200,
+  "unit": "μg/dL"
+ },
+ "マグネシウム (Mg)": {
+  "lower": 1.8,
+  "upper": 2.4,
+  "unit": "mg/dL"
+ },
+ "PT-INR (プロトロンビン時間)": {
+  "lower": 0.85,
+  "upper": 1.15,
+  "unit": "INR"
+ },
+ "グリコアルブミン": {
+  "lower": 11.0,
+  "upper": 16.0,
+  "unit": "%"
+ },
+ "TIBC / UIBC": {
+  "lower": 240,
+  "upper": 450,
+  "unit": "μg/dL"
+ },
+ "フィブリノゲン": {
+  "lower": 200,
+  "upper": 400,
+  "unit": "mg/dL"
+ },
+ "ビタミンB12": {
+  "lower": 180,
+  "upper": 914,
+  "unit": "pg/mL"
+ },
+ "ビタミンB1": {
+  "lower": 24,
+  "upper": 66,
+  "unit": "ng/mL"
+ },
+ "葉酸": {
+  "lower": 3.6,
+  "upper": 12.9,
+  "unit": "ng/mL"
+ },
+ "フェリチン": {
+  "lower": 20,
+  "upper": 250,
+  "unit": "ng/mL"
+ },
+ "血糖 (随時/空腹時)": {
+  "lower": 70,
+  "upper": 109,
+  "unit": "mg/dL"
+ },
+ "赤沈 (ESR)": {
+  "lower": 3,
+  "upper": 15,
+  "unit": "mm/1時間"
+ },
+ "アンモニア": {
+  "lower": 12,
+  "upper": 66,
+  "unit": "μg/dL"
+ },
+ "HbA1c": {
+  "lower": 4.6,
+  "upper": 6.2,
+  "unit": "%"
+ },
+ "エンドトキシン": {
+  "lower": 0,
+  "upper": 1.1,
+  "unit": "pg/mL"
+ },
+ "HBs抗原": null,
+ "血中ケトン体": {
+  "lower": 26,
+  "upper": 122,
+  "unit": "μmol/L"
+ },
+ "HBs抗体": null,
+ "FDP": {
+  "lower": 0,
+  "upper": 5.0,
+  "unit": "μg/mL"
+ },
+ "アンチトロンビンIII": {
+  "lower": 80,
+  "upper": 130,
+  "unit": "%"
+ },
+ "プロカルシトニン (PCT)": {
+  "lower": 0,
+  "upper": 0.05,
+  "unit": "ng/mL"
+ },
+ "Dダイマー": {
+  "lower": 0,
+  "upper": 1.0,
+  "unit": "μg/mL"
+ },
+ "APTT (活性化部分トロンボプラスチン時間)": {
+  "lower": 24.0,
+  "upper": 36.0,
+  "unit": "秒"
+ },
+ "HBc抗体": null,
+ "乳酸": {
+  "lower": 4.0,
+  "upper": 16.0,
+  "unit": "mg/dL"
+ },
+ "CRP": {
+  "lower": 0,
+  "upper": 0.3,
+  "unit": "mg/dL"
+ },
+ "ASLO": {
+  "lower": 0,
+  "upper": 240,
+  "unit": "IU/mL"
+ },
+ "出血時間": {
+  "lower": 1,
+  "upper": 5,
+  "unit": "分"
+ },
+ "HCV抗体": null,
+ "β-D-グルカン": {
+  "lower": 0,
+  "upper": 11.0,
+  "unit": "pg/mL"
+ },
+ "IgM-HA抗体": {
+  "lower": 0,
+  "upper": 0.8,
+  "unit": "C.O.I."
+ },
+ "IgA-HE抗体": {
+  "lower": 0,
+  "upper": 1.0,
+  "unit": "C.O.I."
+ },
+ "HCV-RNA定量": {
+  "lower": 0,
+  "upper": 1.2,
+  "unit": "Log IU/mL"
+ },
+ "RPR (梅毒定性/定量)": {
+  "lower": 0,
+  "upper": 1.0,
+  "unit": "R.U."
+ },
+ "TP抗体": {
+  "lower": 0,
+  "upper": 1.0,
+  "unit": "C.O.I."
+ },
+ "HIV-RNA定量": {
+  "lower": 0,
+  "upper": 20,
+  "unit": "copies/mL"
+ },
+ "麻疹ウイルス抗体": {
+  "lower": 0,
+  "upper": 2.0,
+  "unit": "EIA価"
+ },
+ "リウマトイド因子 (RF)": {
+  "lower": 0,
+  "upper": 15,
+  "unit": "IU/mL"
+ },
+ "HIVスクリーニング (Ag/Ab)": {
+  "lower": 0,
+  "upper": 1.0,
+  "unit": "C.O.I."
+ },
+ "マイコプラズマ抗体": {
+  "lower": 0,
+  "upper": 40,
+  "unit": "倍"
+ },
+ "ムンプスウイルス抗体": {
+  "lower": 0,
+  "upper": 2.0,
+  "unit": "EIA価"
+ },
+ "水痘・帯状疱疹ウイルス抗体": {
+  "lower": 0,
+  "upper": 2.0,
+  "unit": "EIA価"
+ },
+ "クリプトコッカス抗原": null,
+ "抗Sm抗体": {
+  "lower": 0,
+  "upper": 10.0,
+  "unit": "Index"
+ },
+ "抗RNP抗体": {
+  "lower": 0,
+  "upper": 10.0,
+  "unit": "Index"
+ },
+ "抗Scl-70抗体": {
+  "lower": 0,
+  "upper": 10.0,
+  "unit": "Index"
+ },
+ "抗核抗体 (ANA)": {
+  "lower": 0,
+  "upper": 40,
+  "unit": "倍"
+ },
+ "インターフェロンγ遊離試験 (IGRA: T-SPOT/QFT)": {
+  "lower": 0,
+  "upper": 0.35,
+  "unit": "IU/mL"
+ },
+ "EBウイルス抗体 (VCA-IgG/IgM, EBNA)": {
+  "lower": 0,
+  "upper": 10,
+  "unit": "倍"
+ },
+ "アスペルギルス抗原": {
+  "lower": 0,
+  "upper": 0.5,
+  "unit": "C.O.I."
+ },
+ "HTLV-1抗体": {
+  "lower": 0,
+  "upper": 1.0,
+  "unit": "C.O.I."
+ },
+ "抗dsDNA抗体": {
+  "lower": 0,
+  "upper": 10.0,
+  "unit": "IU/mL"
+ },
+ "抗CCP抗体": {
+  "lower": 0,
+  "upper": 4.5,
+  "unit": "U/mL"
+ },
+ "抗Jo-1抗体": {
+  "lower": 0,
+  "upper": 10.0,
+  "unit": "Index"
+ },
+ "カンジダ抗原": null,
+ "抗基底膜抗体 (抗GBM抗体)": {
+  "lower": 0,
+  "upper": 3.0,
+  "unit": "U/mL"
+ },
+ "抗アセチルコリン受容体抗体 (抗AChR)": {
+  "lower": 0,
+  "upper": 0.2,
+  "unit": "nmol/L"
+ },
+ "抗SS-B抗体": {
+  "lower": 0,
+  "upper": 10.0,
+  "unit": "Index"
+ },
+ "サイトメガロウイルス抗体 (IgG/IgM)": {
+  "lower": 0,
+  "upper": 2.0,
+  "unit": "EIA価"
+ },
+ "抗SS-A抗体": {
+  "lower": 0,
+  "upper": 10.0,
+  "unit": "Index"
+ },
+ "風疹ウイルス抗体": null,
+ "抗セントロメア抗体": {
+  "lower": 0,
+  "upper": 10.0,
+  "unit": "U/mL"
+ },
+ "CEA": {
+  "lower": 0,
+  "upper": 5.0,
+  "unit": "ng/mL"
+ },
+ "抗リン脂質抗体 (抗CL/β2GPI)": {
+  "lower": 0,
+  "upper": 3.5,
+  "unit": "U/mL"
+ },
+ "抗アクアポリン4抗体 (抗AQP4)": {
+  "lower": 0,
+  "upper": 3.5,
+  "unit": "U/mL"
+ },
+ "抗平滑筋抗体": null,
+ "PIVKA-II": {
+  "lower": 0,
+  "upper": 40,
+  "unit": "mAU/mL"
+ },
+ "CA19-9": {
+  "lower": 0,
+  "upper": 37,
+  "unit": "U/mL"
+ },
+ "抗ミトコンドリア抗体 (AMA)": null,
+ "PR3-ANCA": {
+  "lower": 0,
+  "upper": 3.5,
+  "unit": "U/mL"
+ },
+ "PSA": {
+  "lower": 0,
+  "upper": 4.0,
+  "unit": "ng/mL"
+ },
+ "CA125": {
+  "lower": 0,
+  "upper": 35,
+  "unit": "U/mL"
+ },
+ "AFP": {
+  "lower": 0,
+  "upper": 10.0,
+  "unit": "ng/mL"
+ },
+ "CA15-3": {
+  "lower": 0,
+  "upper": 25,
+  "unit": "U/mL"
+ },
+ "IgE (非特異的)": {
+  "lower": 0,
+  "upper": 170,
+  "unit": "IU/mL"
+ },
+ "ProGRP": {
+  "lower": 0,
+  "upper": 81,
+  "unit": "pg/mL"
+ },
+ "Free T3": {
+  "lower": 2.3,
+  "upper": 4.0,
+  "unit": "pg/mL"
+ },
+ "抗MuSK抗体": {
+  "lower": 0,
+  "upper": 0.05,
+  "unit": "nmol/L"
+ },
+ "CYFRA": {
+  "lower": 0,
+  "upper": 3.5,
+  "unit": "ng/mL"
+ },
+ "NSE": {
+  "lower": 0,
+  "upper": 16.3,
+  "unit": "ng/mL"
+ },
+ "MPO-ANCA": {
+  "lower": 0,
+  "upper": 3.5,
+  "unit": "U/mL"
+ },
+ "ST-439": {
+  "lower": 0,
+  "upper": 7.0,
+  "unit": "U/mL"
+ },
+ "Free T4": {
+  "lower": 0.9,
+  "upper": 1.7,
+  "unit": "ng/dL"
+ },
+ "SCC抗原": {
+  "lower": 0,
+  "upper": 1.5,
+  "unit": "ng/mL"
+ },
+ "TSH": {
+  "lower": 0.5,
+  "upper": 5.0,
+  "unit": "μIU/mL"
+ },
+ "特異的IgE抗体 (RAST)": null,
+ "DUPAN-2": {
+  "lower": 0,
+  "upper": 150,
+  "unit": "U/mL"
+ },
+ "可溶性IL-2受容体 (sIL-2R)": {
+  "lower": 122,
+  "upper": 496,
+  "unit": "U/mL"
+ },
+ "サイログロブリン": {
+  "lower": 0,
+  "upper": 33.7,
+  "unit": "ng/mL"
+ },
+ "ACTH": {
+  "lower": 7.2,
+  "upper": 63.3,
+  "unit": "pg/mL"
+ },
+ "プロラクチン": {
+  "lower": 3.6,
+  "upper": 28.9,
+  "unit": "ng/mL"
+ },
+ "抗サイログロブリン抗体": {
+  "lower": 0,
+  "upper": 28,
+  "unit": "IU/mL"
+ },
+ "FSH": {
+  "lower": 3.01,
+  "upper": 14.72,
+  "unit": "mIU/mL"
+ },
+ "コルチゾール": {
+  "lower": 4.5,
+  "upper": 21.1,
+  "unit": "µg/dL"
+ },
+ "プロゲステロン": {
+  "lower": 1.7,
+  "upper": 27.0,
+  "unit": "ng/mL"
+ },
+ "抗TPO抗体": {
+  "lower": 0,
+  "upper": 16,
+  "unit": "IU/mL"
+ },
+ "Span-1": {
+  "lower": 0,
+  "upper": 30,
+  "unit": "U/mL"
+ },
+ "レニン活性 / レニン濃度": {
+  "lower": 0.2,
+  "upper": 3.9,
+  "unit": "ng/mL/hr"
+ },
+ "LH": {
+  "lower": 1.5,
+  "upper": 8.0,
+  "unit": "mIU/mL"
+ },
+ "IGF-1 (ソマトメジンC)": {
+  "lower": 120,
+  "upper": 390,
+  "unit": "ng/mL"
+ },
+ "エストラジオール (E2)": {
+  "lower": 25,
+  "upper": 195,
+  "unit": "pg/mL"
+ },
+ "テストステロン": {
+  "lower": 1.31,
+  "upper": 8.71,
+  "unit": "ng/mL"
+ },
+ "TSH受容体抗体 (TRAb/TSAb)": {
+  "lower": 0,
+  "upper": 2.0,
+  "unit": "IU/L"
+ },
+ "アルドステロン": {
+  "lower": 35.7,
+  "upper": 240,
+  "unit": "pg/mL"
+ },
+ "カテコラミン3分画 (アドレナリン/ノルアド/ドーパミン)": null,
+ "ヒト絨毛性ゴナドトロピン (hCG)": {
+  "lower": 0,
+  "upper": 5.0,
+  "unit": "mIU/mL"
+ },
+ "トロポニンI": {
+  "lower": 0,
+  "upper": 0.026,
+  "unit": "ng/mL"
+ },
+ "NT-proBNP": {
+  "lower": 0,
+  "upper": 125,
+  "unit": "pg/mL"
+ },
+ "C-ペプチド (CPR)": {
+  "lower": 0.61,
+  "upper": 2.09,
+  "unit": "ng/mL"
+ },
+ "BNP": {
+  "lower": 0,
+  "upper": 18.4,
+  "unit": "pg/mL"
+ },
+ "ガストリン": {
+  "lower": 0,
+  "upper": 200,
+  "unit": "pg/mL"
+ },
+ "尿定性 (タンパク/糖/潜血/ケトン/ビリルビン/ウロビリノーゲン/pH/比重)": null,
+ "カルシトニン": {
+  "lower": 0,
+  "upper": 9.52,
+  "unit": "pg/mL"
+ },
+ "尿沈渣 (赤血球/白血球/扁平上皮/移行上皮/硝子円柱/顆粒円柱/細菌)": null,
+ "尿中微量アルブミン": {
+  "lower": 0,
+  "upper": 30,
+  "unit": "mg/gCr"
+ },
+ "H-FABP": {
+  "lower": 0,
+  "upper": 6.2,
+  "unit": "ng/mL"
+ },
+ "尿中肺炎球菌抗原": null,
+ "成長ホルモン (GH)": {
+  "lower": 0,
+  "upper": 2.47,
+  "unit": "ng/mL"
+ },
+ "妊娠反応 (尿中hCG)": null,
+ "尿中レジオネラ抗原": null,
+ "尿中β2ミクログロブリン": {
+  "lower": 0,
+  "upper": 230,
+  "unit": "μg/L"
+ },
+ "インスリン (IRI)": {
+  "lower": 1.7,
+  "upper": 10.4,
+  "unit": "μU/mL"
+ },
+ "尿中NAG": {
+  "lower": 0,
+  "upper": 7.0,
+  "unit": "U/L"
+ },
+ "便中ノロウイルス抗原": null,
+ "便中クロストリディオイデス抗原・毒素": null,
+ "トロポニンT": {
+  "lower": 0,
+  "upper": 0.014,
+  "unit": "ng/mL"
+ },
+ "PTH (副甲状腺ホルモン)": {
+  "lower": 10,
+  "upper": 65,
+  "unit": "pg/mL"
+ },
+ "関節液検査 (細胞数/結晶/グラム染色)": null,
+ "髄液オリゴクローナルバンド": null,
+ "便潜血反応 (2日法)": null,
+ "墨汁染色": null,
+ "髄液一般 (細胞数/タンパク/糖/Cl)": null,
+ "髄液IgGインデックス": {
+  "lower": 0,
+  "upper": 0.7,
+  "unit": ""
+ },
+ "グラム染色 (喀痰/尿/血液/髄液/膿)": null,
+ "抗酸菌染色 (チール・ニールセン)": null,
+ "一般細菌培養・同定・感受性": null,
+ "便中ロタウイルス抗原": null,
+ "胸水一般 (比重/タンパク/LDH/細胞数/細胞診)": null,
+ "真菌培養": null,
+ "抗酸菌培養": null,
+ "便中ヘリコバクター・ピロリ抗原": null,
+ "SARS-CoV-2抗原定量/定性": null,
+ "尿中Bence-Jonesタンパク": null,
+ "血液培養 (好気/嫌気)": null,
+ "12誘導心電図": null,
+ "腹水一般 (比重/タンパク/LDH/細胞数/細胞診)": null,
+ "SARS-CoV-2 PCR": null,
+ "マイコプラズマPCR": null,
+ "クラミジアPCR": null,
+ "インフルエンザ抗原迅速検査": null,
+ "血圧脈波検査 (ABI/CAVI)": {
+  "lower": 0.9,
+  "upper": 1.4,
+  "unit": ""
+ },
+ "動脈血酸素飽和度 (SpO2)": {
+  "lower": 96,
+  "upper": 100,
+  "unit": "%"
+ },
+ "結核菌PCR": null,
+ "淋菌PCR": null,
+ "百日咳菌LAMP/PCR": null,
+ "運動負荷心電図 (マスター/トレッドミル)": null,
+ "呼吸機能検査 (スパイロメトリー)": null,
+ "ホルター心電図 (24時間)": null,
+ "6分間歩行試験": null,
+ "新生児聴覚スクリーニング (OAE/ABR)": null,
+ "反復刺激試験": null,
+ "脳波検査": null,
+ "腹部X線 (KUB)": null,
+ "一酸化炭素拡散能 (DLco)": null,
+ "神経伝導速度検査 (NCS)": null,
+ "加算平均心電図": null,
+ "胸部X線": null,
+ "筋電図 (EMG)": null,
+ "頸椎X線": null,
+ "腰椎X線": null,
+ "骨密度測定 (DEXA法)": null,
+ "体性感覚誘発電位 (SEP)": null,
+ "呼気NO濃度 (FeNO)": {
+  "lower": 0,
+  "upper": 22,
+  "unit": "ppb"
+ },
+ "聴性脳幹反応 (ABR)": null,
+ "簡易睡眠時無呼吸検査": {
+  "lower": 0,
+  "upper": 5,
+  "unit": "回/時間"
+ },
+ "終夜睡眠ポリソムノグラフィ (PSG)": {
+  "lower": 0,
+  "upper": 5,
+  "unit": "回/時間"
+ },
+ "マンモグラフィ": null,
+ "側頭骨CT": null,
+ "排尿時膀胱尿道造影 (VCUG)": null,
+ "視覚誘発電位 (VEP)": null,
+ "頭部CT (単純)": null,
+ "子宮卵管造影 (HSG)": null,
+ "四肢・関節X線": null,
+ "頭部CT (造影/CTA)": null,
+ "上部消化管造影 (バリウム)": null,
+ "脊髄造影 (ミエログラフィ)": null,
+ "副鼻腔CT": null,
+ "胸部CT (単純)": null,
+ "胸部CT (造影)": null,
+ "胸部HRCT": null,
+ "冠動脈CT (CCTA)": null,
+ "頭部MRI (T1/T2/FLAIR/DWI/T2*)": null,
+ "頸部CT": null,
+ "腹部CT (造影ダイナミック)": null,
+ "大動脈CT (造影)": null,
+ "四肢血管CT (造影)": null,
+ "注腸造影": null,
+ "下垂体MRI": null,
+ "逆行性腎盂造影 (RP)": null,
+ "頭部MRA": null,
+ "眼窩MRI": null,
+ "経食道心エコー (TEE)": null,
+ "腹部CT (単純)": null,
+ "腹部超音波": null,
+ "乳房MRI": null,
+ "四肢・関節MRI": null,
+ "心臓MRI": null,
+ "甲状腺超音波": null,
+ "経胸壁心エコー (TTE)": null,
+ "骨盤MRI (前立腺/子宮卵巣)": null,
+ "下肢静脈超音波": null,
+ "頸部MRA": null,
+ "腹部MRI": null,
+ "腎動脈超音波": null,
+ "脊椎MRI (頸椎/胸椎/腰椎)": null,
+ "経膣超音波": null,
+ "下肢動脈超音波": null,
+ "MRCP (MR胆管膵管撮影)": null,
+ "FAST (外傷用)": null,
+ "眼球超音波 (Bモード)": null,
+ "前立腺超音波 (経直腸)": null,
+ "乳腺超音波": null,
+ "頸動脈超音波": null,
+ "胎児超音波": null,
+ "肺血流シンチグラフィ": null,
+ "肺換気シンチグラフィ": null,
+ "レノグラム": null,
+ "ドパミントランスポーターシンチ (ダットスキャン)": null,
+ "脳血流シンチグラフィ (SPECT)": null,
+ "骨シンチグラフィ": null,
+ "上部消化管内視鏡 (EGD)": null,
+ "屈折検査": null,
+ "下部消化管内視鏡 (CF)": null,
+ "超音波内視鏡 (EUS)": null,
+ "甲状腺シンチグラフィ": null,
+ "ガリウムシンチグラフィ": null,
+ "眼圧検査": {
+  "lower": 10,
+  "upper": 21,
+  "unit": "mmHg"
+ },
+ "細隙灯顕微鏡検査": null,
+ "気管支鏡検査": null,
+ "視力検査": null,
+ "副腎シンチグラフィ": null,
+ "PET-CT (FDG)": null,
+ "膀胱鏡検査": null,
+ "内視鏡的逆行性胆管膵管造影 (ERCP)": null,
+ "光干渉断層計 (OCT)": null,
+ "角膜内皮細胞顕微鏡検査": null,
+ "喉頭ファイバースコープ": null,
+ "眼底検査": null,
+ "フルオレセイン蛍光眼底造影 (FAG)": null,
+ "網膜電図 (ERG)": null,
+ "小腸カプセル内視鏡": null,
+ "純音聴力検査": null,
+ "関節鏡検査": null,
+ "心筋血流シンチグラフィ (負荷/安静)": null,
+ "視野検査 (静的/動的)": null,
+ "ティンパノメトリー": null,
+ "語音聴力検査": null,
+ "眼振検査 (Frenzel/CCD)": null,
+ "インドシアニングリーン蛍光眼底造影 (ICG)": null,
+ "耳小骨筋反射": null,
+ "尿流測定 (ウロフロメトリー)": null,
+ "羊水検査": null,
+ "味覚検査 (電気/濾紙ディスク)": null,
+ "カロリックテスト": null,
+ "子宮内膜細胞診/組織診": null,
+ "KOH直接鏡検 (真菌)": null,
+ "皮膚生検": null,
+ "嗅覚検査 (静脈性/T&T)": null,
+ "残尿測定": null,
+ "プリックテスト": null,
+ "NST (ノンストレステスト)": null,
+ "パッチテスト": null,
+ "コルポスコピー": null,
+ "ダーモスコピー": null,
+ "左室造影 (LVG)": null,
+ "子宮頸部細胞診 (Pap smear)": null,
+ "ツァンク試験": null,
+ "腎生検": null,
+ "骨髄生検": null,
+ "腰椎穿刺": null,
+ "経気管支肺生検 (TBLB)": null,
+ "染色体検査 (G分染法)": null,
+ "心筋生検": null,
+ "冠動脈造影 (CAG)": null,
+ "肝生検": null,
+ "電気生理学的検査 (EPS)": null,
+ "神経生検": null,
+ "骨髄穿刺": null,
+ "FISH法 (各疾患特異的プローブ)": null,
+ "右心カテーテル (Swan-Ganz)": null,
+ "筋生検": null,
+ "BCR-ABL融合遺伝子": null,
+ "脳血管造影 (DSA)": null,
+ "腹部血管造影": null,
+ "JAK2遺伝子変異": null,
+ "BRCA1/2遺伝子検査": null,
+ "リンパ節生検": null,
+ "MSI検査 (マイクロサテライト不安定性)": null,
+ "がん遺伝子パネル検査": null,
+ "血液ガス分析 (動脈)": null,
+ "髄液検査 (髄液一般・生化学)": null,
+ "全身状態の観察": null,
+ "バイタルサイン測定": null,
+ "頭頸部の診察": null,
+ "口腔・咽頭の診察": null,
+ "眼の診察": null,
+ "心音聴診": null,
+ "肺音聴診": null,
+ "胸部の打診": null,
+ "腹部の視診・聴診": null,
+ "腹部触診": null,
+ "直腸診": null,
+ "皮膚の診察": null,
+ "四肢末梢の診察": null,
+ "関節の診察": null,
+ "下肢の血管診察": null,
+ "意識レベルの評価": null,
+ "髄膜刺激徴候の検査": null,
+ "脳神経の検査": null,
+ "運動・感覚系の検査": null,
+ "小脳機能・歩行の検査": null,
+ "脊椎・背部の診察": null,
+ "CVA叩打痛の検査": null,
+ "問診：既往歴・手術歴": null,
+ "問診：家族歴": null,
+ "問診：薬剤歴": null,
+ "問診：アレルギー歴": null,
+ "問診：渡航歴": null,
+ "問診：職業歴・環境曝露": null,
+ "問診：喫煙歴": null,
+ "問診：飲酒歴": null,
+ "問診：違法薬物・嗜好品": null,
+ "問診：性行為歴・STI歴": null,
+ "問診：月経歴・産科歴": null,
+ "問診：外傷歴・最近の処置": null,
+ "問診：動物・ペット接触歴": null,
+ "問診：食事歴": null,
+ "問診：予防接種歴": null,
+ "問診：輸血歴・臓器移植歴": null,
+ "問診：体重変化・食欲": null,
+ "問診：睡眠・精神状態": null,
+ "問診：排尿・排便の変化": null
+}

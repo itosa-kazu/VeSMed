@@ -2,9 +2,10 @@
 VeSMed - Web UI (Gradio)
 ブラウザから操作できる対話型インターフェース
 
-フロー:
-  1. 患者情報入力（自由記述）→ ベクトル検索 → 候補疾患 + 推薦検査を表示
-  2. 検査結果が出たら患者テキストに追記 → 再分析 → 更新
+フロー（Option 3: 症状と検査結果を分離）:
+  1. 症状入力 → ベクトル検索 → 候補疾患（初回、固定）
+  2. 検査結果入力 → sign(polarity) × sim_matrix で疾患重み更新
+  3. 全テキスト（症状+結果）→ novelty計算 → 検査ランキング
 """
 
 import gradio as gr
@@ -26,38 +27,57 @@ def init_engine():
 # コールバック
 # ----------------------------------------------------------------
 
-def analyze_patient(patient_text):
-    """患者情報を分析（ベクトル検索）"""
+def analyze_patient(symptoms_text, results_text, mode):
+    """症状と検査結果を分離して分析（Option 3）"""
     import time as _time
-    if not patient_text.strip():
+    if not symptoms_text.strip():
         return (
-            "患者情報を入力してください。",
+            "症状を入力してください。",
             None, None, None, None,
         )
 
     eng = init_engine()
+    # モード変換: UIラベル → engine引数
+    engine_mode = "llm" if "LLM" in mode else "fast"
 
     t0 = _time.time()
-    # embedding検索（LLM不要: 生テキスト直接embed）
-    candidates = eng.search_diseases(patient_text)
+
+    # Step 1: 症状で疾患検索（初回、固定）
+    candidates = eng.search_diseases(symptoms_text)
     t1 = _time.time()
     print(f"[TIMING] search_diseases: {t1-t0:.1f}s")
 
     candidates = eng.compute_priors(candidates)
 
-    # novelty計算（行単位embedding → 既知情報を連続的に割引）
-    novelty = eng.compute_novelty(patient_text)
+    # Step 2: 検査結果で重み更新（Option 3）
+    result_lines = [l.strip() for l in results_text.split('\n') if l.strip()]
+    if result_lines:
+        candidates = eng.update_from_results(
+            candidates, result_lines,
+            symptoms=symptoms_text, mode=engine_mode,
+        )
     t2 = _time.time()
-    print(f"[TIMING] compute_novelty: {t2-t1:.1f}s")
+    print(f"[TIMING] update_from_results ({engine_mode}): {t2-t1:.1f}s")
 
+    # Step 3: novelty計算（症状+結果の全テキスト）
+    full_text = symptoms_text
+    if result_lines:
+        full_text += '\n' + '\n'.join(result_lines)
+    novelty = eng.compute_novelty(full_text)
+    t3 = _time.time()
+    print(f"[TIMING] compute_novelty: {t3-t2:.1f}s")
+
+    # Step 4: 検査ランキング
     ranked_tests = eng.rank_tests(candidates, novelty=novelty)
     critical_tests = eng.rank_tests_critical(candidates, novelty=novelty)
     confirm_tests = eng.rank_tests_confirm(candidates, novelty=novelty)
-    t3 = _time.time()
-    print(f"[TIMING] rank_tests+critical+confirm: {t3-t2:.1f}s")
-    print(f"[TIMING] === TOTAL: {t3-t0:.1f}s ===")
+    t4 = _time.time()
+    print(f"[TIMING] rank_tests+critical+confirm: {t4-t3:.1f}s")
+    print(f"[TIMING] === TOTAL ({engine_mode}): {t4-t0:.1f}s ===")
 
-    status = f"分析完了 / 全{len(candidates)}疾患で計算 / 推薦検査{len(ranked_tests)}件"
+    n_results = len(result_lines)
+    mode_label = "LLM注釈" if engine_mode == "llm" else "高速"
+    status = f"分析完了（{mode_label}）/ 全{len(candidates)}疾患 / 検査結果{n_results}件反映"
 
     return (
         status,
@@ -70,7 +90,7 @@ def analyze_patient(patient_text):
 
 def reset_session():
     return (
-        "",
+        "", "",
         "リセットしました。",
         None, None, None, None,
     )
@@ -154,21 +174,31 @@ with gr.Blocks(
 
     gr.Markdown("""
 # VeSMed - ベクトル空間医学統一フレームワーク
-患者情報（自由記述）→ ベクトル検索 → 候補疾患 + 推薦検査を表示。検査結果は患者テキストに追記して再分析。
+症状 → ベクトル検索 → 候補疾患。検査結果 → 極性判定 × 類似度行列で疾患重み更新。
     """)
 
-    # ===== 上段: 患者情報 =====
+    # ===== 上段: 入力 =====
     with gr.Row():
         with gr.Column(scale=3):
-            patient_input = gr.Textbox(
-                label="患者情報（自由記述 — 検査結果もここに追記）",
-                placeholder="例: 67歳の男性。繰り返す発熱を主訴に来院。7週間前から38℃前後の発熱が出現し、市販の解熱薬で一時的に解熱するが再度発熱する。\n\n検査結果が出たらここに追記して再分析: 血液培養→黄色ブドウ球菌陽性、心エコー→大動脈弁に疣贅あり",
-                lines=6,
+            symptoms_input = gr.Textbox(
+                label="症状（自由記述 — 疾患検索の基盤）",
+                placeholder="例: 67歳の男性。繰り返す発熱を主訴に来院。7週間前から38℃前後の発熱が出現し、市販の解熱薬で一時的に解熱するが再度発熱する。",
+                lines=4,
+            )
+            results_input = gr.Textbox(
+                label="検査結果（1行1件 — 極性×類似度行列で疾患重み更新）",
+                placeholder="例:\nγ-GTP正常値\n直接ビリルビン正常値\nMRCP異常なし\n血液培養: 黄色ブドウ球菌陽性",
+                lines=4,
             )
             with gr.Row():
                 analyze_btn = gr.Button("分析開始", variant="primary", scale=2)
                 reset_btn = gr.Button("リセット", variant="secondary", scale=1)
         with gr.Column(scale=1):
+            mode_radio = gr.Radio(
+                choices=["高速（基準範囲）", "LLM注釈（文脈考慮）"],
+                value="高速（基準範囲）",
+                label="結果解釈モード",
+            )
             status_text = gr.Textbox(label="ステータス", interactive=False, lines=2)
 
     gr.Markdown("---")
@@ -206,18 +236,18 @@ with gr.Blocks(
 
     analyze_btn.click(
         fn=analyze_patient,
-        inputs=[patient_input],
+        inputs=[symptoms_input, results_input, mode_radio],
         outputs=outputs,
     )
-    patient_input.submit(
+    symptoms_input.submit(
         fn=analyze_patient,
-        inputs=[patient_input],
+        inputs=[symptoms_input, results_input, mode_radio],
         outputs=outputs,
     )
 
     reset_btn.click(
         fn=reset_session,
-        outputs=[patient_input] + outputs,
+        outputs=[symptoms_input, results_input] + outputs,
     )
 
 

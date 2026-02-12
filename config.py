@@ -8,6 +8,11 @@ LLM_API_KEY = os.environ.get("LLM_API_KEY", "REDACTED_LLM_KEY")
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://new.lemonapi.site/v1")
 LLM_MODEL = os.environ.get("LLM_MODEL", "[V]gemini-3-pro-preview")
 
+# LLM API設定（メタデータ生成用 — pro）
+GENERATE_LLM_API_KEY = os.environ.get("GENERATE_LLM_API_KEY", "REDACTED_GENERATE_KEY")
+GENERATE_LLM_BASE_URL = os.environ.get("GENERATE_LLM_BASE_URL", "https://new.lemonapi.site/v1")
+GENERATE_LLM_MODEL = os.environ.get("GENERATE_LLM_MODEL", "[V]gemini-3-pro-preview")
+
 # LLM API設定（フォールバック）
 LLM_FALLBACK_API_KEY = os.environ.get("LLM_FALLBACK_API_KEY", "REDACTED_FALLBACK_KEY")
 LLM_FALLBACK_BASE_URL = os.environ.get("LLM_FALLBACK_BASE_URL", "https://api.12ai.org/v1")

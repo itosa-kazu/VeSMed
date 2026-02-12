@@ -1,9 +1,10 @@
 """
 VeSMed - 対話型CLI
-患者情報 → 候補疾患 → 検査推薦 → 検査結果で更新 → ループ
+症状 → 候補疾患 → 検査推薦 → 検査結果で重み更新（Option 3）→ ループ
 """
 
 from engine import VeSMedEngine
+from config import TOP_K_TESTS
 
 
 def format_candidates(candidates, top_n=10):
@@ -90,17 +91,17 @@ def main():
     print(f"ベクトルDB: {engine.collection.count()}件")
     print()
     print("使い方:")
-    print("  患者情報を入力 → 候補疾患と推薦検査を表示")
-    print("  検査結果は「検査名: 結果」の形式で入力")
+    print("  症状を入力 → 候補疾患と推薦検査を表示")
+    print("  検査結果は1行1件で入力（例: γ-GTP正常値、血液培養: 黄色ブドウ球菌陽性）")
     print("  「quit」で終了、「reset」で新しい患者")
     print()
 
-    patient_text = ""
-    done_tests = []
+    symptoms_text = ""
+    result_lines = []
 
     while True:
-        if not patient_text:
-            print("患者情報を入力してください（複数行の場合は空行で確定）:")
+        if not symptoms_text:
+            print("症状を入力してください（複数行の場合は空行で確定）:")
             lines = []
             while True:
                 line = input()
@@ -112,9 +113,9 @@ def main():
                     print("終了します。")
                     return
                 lines.append(line)
-            patient_text = "\n".join(lines)
+            symptoms_text = "\n".join(lines)
         else:
-            print("検査結果を入力（例: 12誘導心電図: V1-V4でST上昇）")
+            print("検査結果を入力（例: γ-GTP正常値、血液培養: 黄色ブドウ球菌陽性）")
             print("  「reset」で新しい患者、「quit」で終了:")
             result_input = input("> ").strip()
 
@@ -122,50 +123,43 @@ def main():
                 print("終了します。")
                 return
             if result_input.lower() == "reset":
-                patient_text = ""
-                done_tests = []
+                symptoms_text = ""
+                result_lines = []
                 print("\n--- 新しい患者 ---\n")
                 continue
             if not result_input:
                 continue
 
-            # 検査結果を解析
-            if ": " in result_input:
-                test_name, result = result_input.split(": ", 1)
-            elif ":" in result_input:
-                test_name, result = result_input.split(":", 1)
-            else:
-                test_name = result_input
-                result = "（詳細不明）"
+            result_lines.append(result_input)
 
-            test_name = test_name.strip()
-            result = result.strip()
-            done_tests.append(test_name)
-            patient_text = engine.update_patient_text(patient_text, test_name, result)
-
-        # Step 1+2: ベクトル検索（生テキスト直接embed、LLM rewrite不要）
+        # Step 1: 症状で疾患検索（毎回症状から検索、検査結果はsim_matrixで更新）
         print("\nベクトル検索中...")
-        candidates = engine.search_diseases(patient_text)
-
-        # Step 3: 先験確率計算
+        candidates = engine.search_diseases(symptoms_text)
         candidates = engine.compute_priors(candidates)
+
+        # Step 2: 検査結果で重み更新（Option 3、高速モード）
+        if result_lines:
+            candidates = engine.update_from_results(
+                candidates, result_lines,
+                symptoms=symptoms_text, mode="fast",
+            )
 
         # 表示
         print()
         print(format_candidates(candidates))
 
-        # Step 4: novelty計算 + 検査ランキング
+        # Step 3: novelty + 検査ランキング
         print("情報利得計算中...")
-        novelty = engine.compute_novelty(patient_text)
+        full_text = symptoms_text
+        if result_lines:
+            full_text += '\n' + '\n'.join(result_lines)
+        novelty = engine.compute_novelty(full_text)
         ranked_tests = engine.rank_tests(candidates, novelty=novelty)
         confirm_tests = engine.rank_tests_confirm(candidates, novelty=novelty)
 
         print(format_tests(ranked_tests, top_n=TOP_K_TESTS))
         print(format_confirm(confirm_tests, top_n=TOP_K_TESTS))
 
-
-# config からインポート
-from config import TOP_K_TESTS
 
 if __name__ == "__main__":
     main()
