@@ -16,6 +16,7 @@ from config import (
     LLM_API_KEY, LLM_BASE_URL, LLM_MODEL,
     LLM_FALLBACK_API_KEY, LLM_FALLBACK_BASE_URL, LLM_FALLBACK_MODEL,
     LLM_MAX_RETRIES,
+    VERTEX_SA_KEY, VERTEX_PROJECT, VERTEX_LOCATION, VERTEX_MODEL,
     EMBEDDING_API_KEY, EMBEDDING_BASE_URL, EMBEDDING_MODEL,
     DISEASES_JSONL, TESTS_JSONL, FINDINGS_JSONL, HPE_ITEMS_JSONL,
     CHROMA_DIR, DATA_DIR,
@@ -24,6 +25,15 @@ from config import (
 
 class VeSMedEngine:
     def __init__(self):
+        # Vertex AI（プライマリLLM — 直接Google API、低遅延）
+        from google import genai
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = VERTEX_SA_KEY
+        self.vertex_client = genai.Client(
+            project=VERTEX_PROJECT,
+            location=VERTEX_LOCATION,
+            vertexai=True,
+        )
+        # フォールバック（Vertex失敗時）
         self.llm_client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL, timeout=30)
         self.llm_fallback_client = OpenAI(api_key=LLM_FALLBACK_API_KEY, base_url=LLM_FALLBACK_BASE_URL, timeout=30)
         self.embed_client = OpenAI(api_key=EMBEDDING_API_KEY, base_url=EMBEDDING_BASE_URL)
@@ -981,8 +991,43 @@ class VeSMedEngine:
     # LLM呼び出し（リトライ + フォールバック）
     # ----------------------------------------------------------------
     def _llm_call(self, messages, temperature=0.1, max_tokens=65536):
-        """プライマリAPIでリトライし、失敗したらフォールバックAPIに切り替え"""
-        # プライマリAPI
+        """Vertex AI → lemonapi → 12ai の3段フォールバック"""
+        from google.genai import types as genai_types
+
+        # OpenAI messages → Vertex contents変換
+        system_text = ""
+        contents = []
+        for m in messages:
+            if m["role"] == "system":
+                system_text = m["content"]
+            elif m["role"] == "user":
+                contents.append(genai_types.Content(
+                    role="user",
+                    parts=[genai_types.Part(text=m["content"])],
+                ))
+            elif m["role"] == "assistant":
+                contents.append(genai_types.Content(
+                    role="model",
+                    parts=[genai_types.Part(text=m["content"])],
+                ))
+
+        # Vertex AI（プライマリ）
+        try:
+            config = genai_types.GenerateContentConfig(
+                system_instruction=system_text if system_text else None,
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+            )
+            resp = self.vertex_client.models.generate_content(
+                model=VERTEX_MODEL,
+                contents=contents,
+                config=config,
+            )
+            return resp.text.strip()
+        except Exception as e:
+            print(f"[LLM] Vertex AI失敗: {e}")
+
+        # lemonapi フォールバック
         for attempt in range(LLM_MAX_RETRIES + 1):
             try:
                 resp = self.llm_client.chat.completions.create(
@@ -993,12 +1038,12 @@ class VeSMedEngine:
                 )
                 return resp.choices[0].message.content.strip()
             except Exception as e:
-                print(f"[LLM] プライマリAPI失敗 (試行{attempt+1}/{LLM_MAX_RETRIES+1}): {e}")
+                print(f"[LLM] lemonapi失敗 (試行{attempt+1}/{LLM_MAX_RETRIES+1}): {e}")
                 if attempt < LLM_MAX_RETRIES:
                     time.sleep(2 ** attempt)
 
-        # フォールバックAPI
-        print("[LLM] フォールバックAPIに切り替え")
+        # 12ai フォールバック
+        print("[LLM] 12aiフォールバックに切り替え")
         try:
             resp = self.llm_fallback_client.chat.completions.create(
                 model=LLM_FALLBACK_MODEL,
@@ -1655,14 +1700,102 @@ class VeSMedEngine:
         )
         print(f"[HPE NameEmb] {self.hpe_name_embs.shape[0]}件計算・キャッシュ完了")
 
-    def compute_novelty_hpe(self, patient_text: str) -> np.ndarray:
+    def extract_hpe_findings(self, patient_text: str) -> list:
         """
-        Part D用novelty: 患者テキストに既に言及されている問診/身体診察項目を割引。
+        LLMで患者テキストから問診/身体診察所見を極性付きで抽出。
 
-        二重マッチ: 項目名embedding と 仮説embedding の両方で患者テキストと比較し、
-        高い方を採用。仮説テキストは語彙が豊富なため、
-        「消化性潰瘍なし」→「消化性潰瘍 胃潰瘍 十二指腸潰瘍 H.pylori」の
-        マッチが項目名のみより高精度に捕捉される。
+        embeddingは否定を区別できないが、LLMは文脈を理解できる。
+        用途:
+          1. Part D novelty抑制（聴取済み項目の推薦を抑制）
+          2. 疾患重み更新（陽性→関連疾患↑、陰性→関連疾患↓）
+
+        返り値: [{"item": str, "index": int, "polarity": +1/-1}, ...]
+        """
+        if not self.hpe_names:
+            return []
+
+        item_list = ", ".join(self.hpe_names)
+
+        prompt = f"""患者テキストで既に聴取・確認・言及済みの項目を項目リストから選び、極性を判定せよ。
+
+極性ルール:
+- 陽性所見（「発熱」「腹痛あり」「体温38.5℃」）→ +1
+- 陰性所見（「肝疾患なし」「便秘なし」「Murphy徴候陰性」）→ -1
+
+出力: [{{"item":"項目名","polarity":1}}, {{"item":"項目名","polarity":-1}}, ...] のJSON配列のみ。
+
+項目リスト: {item_list}
+
+患者テキスト: {patient_text}"""
+
+        try:
+            content = self._llm_call([
+                {"role": "system", "content": "JSON配列のみ出力。説明不要。"},
+                {"role": "user", "content": prompt},
+            ])
+            start = content.find("[")
+            end = content.rfind("]") + 1
+            if start >= 0 and end > start:
+                parsed = json.loads(content[start:end])
+                if isinstance(parsed, list):
+                    findings = []
+                    for entry in parsed:
+                        name = entry.get("item", "")
+                        pol = entry.get("polarity", 1)
+                        if name in self.hpe_idx:
+                            findings.append({
+                                "item": name,
+                                "index": self.hpe_idx[name],
+                                "polarity": 1 if pol > 0 else -1,
+                            })
+                    n_pos = sum(1 for f in findings if f["polarity"] > 0)
+                    n_neg = sum(1 for f in findings if f["polarity"] < 0)
+                    print(f"  [HPE抽出] {len(findings)}項目 (陽性{n_pos}, 陰性{n_neg})")
+                    return findings
+        except Exception as e:
+            print(f"  [HPE抽出] LLM失敗: {e}")
+
+        return []
+
+    def update_from_hpe(self, candidates: list, hpe_findings: list) -> list:
+        """
+        問診/身体診察所見から疾患重みを更新。update_from_resultsと同じ数学。
+
+        陽性所見: similarity *= exp(+excess)  — 関連疾患を増幅
+        陰性所見: similarity *= exp(-excess)  — 関連疾患を抑制
+        excess = max(0, sim_matrix_hpe[d][k] - mean)
+        """
+        if not hpe_findings or self.sim_matrix_hpe is None:
+            return candidates
+
+        for f in hpe_findings:
+            idx = f["index"]
+            polarity = f["polarity"]
+
+            # sim_matrix_hpe[:, idx] = 各疾患とこのHPE項目の関連度
+            sims = self.sim_matrix_hpe[:, idx]  # (N_diseases,)
+            bg = float(sims.mean())
+
+            for c in candidates:
+                d_idx = self.disease_idx.get(c["disease_name"])
+                if d_idx is not None:
+                    excess = max(0.0, float(sims[d_idx]) - bg)
+                    if excess > 0:
+                        c["similarity"] *= float(np.exp(polarity * excess))
+
+            print(f"  [HPE更新] {f['item']} (pol={polarity:+d}) bg={bg:.4f}")
+
+        # 重み順にソート
+        candidates.sort(key=lambda c: c["similarity"], reverse=True)
+        return candidates
+
+    def compute_novelty_hpe(self, patient_text: str,
+                            hpe_findings: list = None) -> np.ndarray:
+        """
+        Part D用novelty。
+
+        hpe_findings提供時: LLM抽出結果で完全抑制 + embedding二重マッチ
+        hpe_findings未提供: embeddingのみ（LLM呼び出しなし）
         """
         n_hpe = len(self.hpe_names)
         if n_hpe == 0 or self.hpe_name_embs is None:
@@ -1672,6 +1805,7 @@ class VeSMedEngine:
         if not lines:
             return np.ones(n_hpe)
 
+        # Embedding二重マッチ
         resp = self.embed_client.embeddings.create(
             model=EMBEDDING_MODEL,
             input=lines,
@@ -1681,19 +1815,23 @@ class VeSMedEngine:
         l_norms[l_norms == 0] = 1.0
         line_embs = line_embs / l_norms
 
-        # 項目名マッチ
-        sims_name = line_embs @ self.hpe_name_embs.T  # (N_lines, N_hpe)
-        max_name = sims_name.max(axis=0)  # (N_hpe,)
+        sims_name = line_embs @ self.hpe_name_embs.T
+        max_name = sims_name.max(axis=0)
 
-        # 仮説embeddingマッチ（語彙豊富、より広いカバー）
         if self.hpe_hyp_embs is not None:
-            sims_hyp = line_embs @ self.hpe_hyp_embs.T  # (N_lines, N_hpe)
-            max_hyp = sims_hyp.max(axis=0)  # (N_hpe,)
+            sims_hyp = line_embs @ self.hpe_hyp_embs.T
+            max_hyp = sims_hyp.max(axis=0)
             max_sim = np.maximum(max_name, max_hyp)
         else:
             max_sim = max_name
 
         novelty = 1.0 - np.clip(max_sim, 0.0, 1.0)
+
+        # LLM抽出結果で上書き（完全抑制、極性問わず聴取済み=推薦不要）
+        if hpe_findings:
+            for f in hpe_findings:
+                novelty[f["index"]] = 0.0
+
         return novelty
 
     def rank_hpe(self, candidates: list, novelty_hpe: np.ndarray = None) -> list:

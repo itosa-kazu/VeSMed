@@ -59,21 +59,35 @@ def analyze_patient(symptoms_text, results_text, mode):
     import copy
     cands_copy = copy.deepcopy(candidates)
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        # update_from_results, compute_novelty, compute_novelty_hpe は全て独立（並行可能）
+    with ThreadPoolExecutor(max_workers=4) as executor:
         fut_update = executor.submit(
             eng.update_from_results, cands_copy, result_lines,
             symptoms_text, engine_mode,
         ) if result_lines else None
         fut_novelty = executor.submit(eng.compute_novelty, full_text)
+        # LLMモード: HPE所見抽出（極性付き）を並行実行
+        fut_hpe_extract = executor.submit(
+            eng.extract_hpe_findings, full_text,
+        ) if engine_mode == "llm" else None
+        # Embedding noveltyは常に実行（LLM不要）
         fut_novelty_hpe = executor.submit(eng.compute_novelty_hpe, full_text)
 
         novelty = fut_novelty.result()
-        novelty_hpe = fut_novelty_hpe.result()
+        hpe_findings = fut_hpe_extract.result() if fut_hpe_extract else []
+        novelty_hpe_base = fut_novelty_hpe.result()
         candidates = fut_update.result() if fut_update else candidates
 
+    # HPE所見でnovelty上書き + 疾患重み更新
+    if hpe_findings:
+        # novelty: 聴取済み項目を完全抑制
+        for f in hpe_findings:
+            novelty_hpe_base[f["index"]] = 0.0
+        # 疾患重み: 陽性→↑、陰性→↓
+        candidates = eng.update_from_hpe(candidates, hpe_findings)
+    novelty_hpe = novelty_hpe_base
+
     t2 = _time.time()
-    print(f"[TIMING] update+novelty+novelty_hpe parallel ({engine_mode}): {t2-t1:.1f}s")
+    print(f"[TIMING] update+novelty+hpe parallel ({engine_mode}): {t2-t1:.1f}s")
 
     # Step 4: 検査ランキング + Part D（CPU演算のみ、高速）
     ranked_tests = eng.rank_tests(candidates, novelty=novelty)

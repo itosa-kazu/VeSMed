@@ -28,8 +28,14 @@ EMBEDDING_API_KEY = os.environ.get("EMBEDDING_API_KEY", "REDACTED_EMBEDDING_KEY"
 EMBEDDING_BASE_URL = os.environ.get("EMBEDDING_BASE_URL", "https://openrouter.ai/api/v1")
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "qwen/qwen3-embedding-8b")
 
+# Vertex AI設定（プライマリLLM — 直接Google API、低遅延）
+VERTEX_SA_KEY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "thermal-outlet-483512-m4-8ec9647654b6.json")
+VERTEX_PROJECT = "thermal-outlet-483512-m4"
+VERTEX_LOCATION = "global"
+VERTEX_MODEL = "gemini-3-flash-preview"
+
 # リトライ設定
-LLM_MAX_RETRIES = 2  # プライマリAPIのリトライ回数
+LLM_MAX_RETRIES = 2  # フォールバックAPIのリトライ回数
 
 # パラメータ
 TAU = 1.0
