@@ -17,7 +17,8 @@ from config import (
     LLM_FALLBACK_API_KEY, LLM_FALLBACK_BASE_URL, LLM_FALLBACK_MODEL,
     LLM_MAX_RETRIES,
     EMBEDDING_API_KEY, EMBEDDING_BASE_URL, EMBEDDING_MODEL,
-    DISEASES_JSONL, TESTS_JSONL, FINDINGS_JSONL, CHROMA_DIR, DATA_DIR,
+    DISEASES_JSONL, TESTS_JSONL, FINDINGS_JSONL, HPE_ITEMS_JSONL,
+    CHROMA_DIR, DATA_DIR,
 )
 
 
@@ -115,6 +116,18 @@ class VeSMedEngine:
         self.reference_ranges = {}  # canonical_test_name → {lower, upper, unit}
         self.range_alias = {}       # alias (lowercase) → canonical_test_name
         self._load_reference_ranges()
+
+        # Part D: 問診・身体診察項目
+        self.hpe_items = []          # [{"item_name", "category", "subcategory", "hypothesis", "instruction"}, ...]
+        self.hpe_names = []          # 項目名リスト（表示用）
+        self.hpe_idx = {}            # item_name → index
+        self.sim_matrix_hpe = None   # (N_diseases, N_hpe_items) ndarray
+        self.hpe_name_embs = None    # (N_hpe_items, dim) 正規化済み
+        self.hpe_hyp_embs = None     # (N_hpe_items, dim) 仮説embedding（novelty二重マッチ用）
+        self._load_hpe_items()
+        if self.hpe_items:
+            self._compute_hpe_similarity_matrix()
+            self._compute_hpe_name_embs()
 
         # 最後のクエリembedding（rank_testsでrisk_relevance計算に使用）
         self._last_query_embedding = None
@@ -1534,3 +1547,225 @@ class VeSMedEngine:
             done_tests = []
         done_set = set(self.test_name_map.get(t, t) for t in done_tests)
         return sorted(t for t in self.test_names if t not in done_set)
+
+    # ================================================================
+    # Part D: 問診・身体診察推奨
+    # ================================================================
+
+    def _load_hpe_items(self):
+        """hpe_items.jsonl を読み込み。"""
+        if not os.path.exists(HPE_ITEMS_JSONL):
+            print("[HPE] hpe_items.jsonl なし、Part Dスキップ")
+            return
+        with open(HPE_ITEMS_JSONL, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    item = json.loads(line)
+                    self.hpe_items.append(item)
+                except (json.JSONDecodeError, KeyError):
+                    continue
+        self.hpe_names = [it["item_name"] for it in self.hpe_items]
+        self.hpe_idx = {name: i for i, name in enumerate(self.hpe_names)}
+        print(f"[HPE] {len(self.hpe_items)}項目読込 (Hx: {sum(1 for it in self.hpe_items if it['category']=='Hx')}, PE: {sum(1 for it in self.hpe_items if it['category']=='PE')})")
+
+    def _compute_hpe_similarity_matrix(self):
+        """
+        仮説embedding方式（Part A-Cと同一数学）:
+        sim_matrix_hpe[d][k] = cos(E(hypothesis_k), disease_emb_d)
+        """
+        cache_file = os.path.join(DATA_DIR, "sim_matrix_hpe.npz")
+
+        if self.disease_embs_normed is None:
+            print("[HPE] 疾患embeddingなし、スキップ")
+            return
+
+        hypotheses = [it["hypothesis"] for it in self.hpe_items]
+        n_hpe = len(hypotheses)
+
+        # 疾患名リスト（disease_idxと同順）
+        disease_names = [""] * len(self.disease_idx)
+        for dname, idx in self.disease_idx.items():
+            disease_names[idx] = dname
+
+        # キャッシュチェック
+        if os.path.exists(cache_file):
+            data = np.load(cache_file, allow_pickle=True)
+            cached_diseases = list(data["disease_names"])
+            cached_hpe = list(data["hpe_names"])
+            has_hyp = "hyp_embs" in data
+            if cached_diseases == disease_names and cached_hpe == self.hpe_names and has_hyp:
+                self.sim_matrix_hpe = data["sim_matrix"]
+                self.hpe_hyp_embs = data["hyp_embs"]
+                print(f"[HPE sim_matrix] キャッシュから読込 {self.sim_matrix_hpe.shape}")
+                return
+
+        # 仮説embedding
+        hyp_embs = self._batch_embed(hypotheses)
+        if hyp_embs is None:
+            print("[HPE sim_matrix] embedding失敗")
+            return
+
+        h_norms = np.linalg.norm(hyp_embs, axis=1, keepdims=True)
+        h_norms[h_norms == 0] = 1.0
+        hyp_embs_normed = hyp_embs / h_norms
+
+        self.sim_matrix_hpe = self.disease_embs_normed @ hyp_embs_normed.T
+        self.hpe_hyp_embs = hyp_embs_normed  # novelty二重マッチ用
+
+        np.savez(
+            cache_file,
+            sim_matrix=self.sim_matrix_hpe,
+            hyp_embs=hyp_embs_normed,
+            disease_names=np.array(disease_names, dtype=object),
+            hpe_names=np.array(self.hpe_names, dtype=object),
+        )
+        print(f"[HPE sim_matrix] {self.sim_matrix_hpe.shape} 計算・キャッシュ完了")
+
+    def _compute_hpe_name_embs(self):
+        """HPE項目名をembedし、novelty計算に使用。"""
+        cache_file = os.path.join(DATA_DIR, "hpe_name_embs.npz")
+
+        if not self.hpe_names:
+            return
+
+        if os.path.exists(cache_file):
+            data = np.load(cache_file, allow_pickle=True)
+            cached_names = list(data["hpe_names"])
+            if cached_names == self.hpe_names:
+                self.hpe_name_embs = data["embeddings"]
+                print(f"[HPE NameEmb] キャッシュから{self.hpe_name_embs.shape[0]}件読込")
+                return
+
+        embs = self._batch_embed(self.hpe_names)
+        if embs is None:
+            print("[HPE NameEmb] embedding失敗")
+            return
+
+        norms = np.linalg.norm(embs, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        self.hpe_name_embs = embs / norms
+
+        np.savez(
+            cache_file,
+            embeddings=self.hpe_name_embs,
+            hpe_names=np.array(self.hpe_names, dtype=object),
+        )
+        print(f"[HPE NameEmb] {self.hpe_name_embs.shape[0]}件計算・キャッシュ完了")
+
+    def compute_novelty_hpe(self, patient_text: str) -> np.ndarray:
+        """
+        Part D用novelty: 患者テキストに既に言及されている問診/身体診察項目を割引。
+
+        二重マッチ: 項目名embedding と 仮説embedding の両方で患者テキストと比較し、
+        高い方を採用。仮説テキストは語彙が豊富なため、
+        「消化性潰瘍なし」→「消化性潰瘍 胃潰瘍 十二指腸潰瘍 H.pylori」の
+        マッチが項目名のみより高精度に捕捉される。
+        """
+        n_hpe = len(self.hpe_names)
+        if n_hpe == 0 or self.hpe_name_embs is None:
+            return np.ones(n_hpe)
+
+        lines = [l.strip() for l in patient_text.split('\n') if l.strip()]
+        if not lines:
+            return np.ones(n_hpe)
+
+        resp = self.embed_client.embeddings.create(
+            model=EMBEDDING_MODEL,
+            input=lines,
+        )
+        line_embs = np.array([d.embedding for d in resp.data], dtype=np.float32)
+        l_norms = np.linalg.norm(line_embs, axis=1, keepdims=True)
+        l_norms[l_norms == 0] = 1.0
+        line_embs = line_embs / l_norms
+
+        # 項目名マッチ
+        sims_name = line_embs @ self.hpe_name_embs.T  # (N_lines, N_hpe)
+        max_name = sims_name.max(axis=0)  # (N_hpe,)
+
+        # 仮説embeddingマッチ（語彙豊富、より広いカバー）
+        if self.hpe_hyp_embs is not None:
+            sims_hyp = line_embs @ self.hpe_hyp_embs.T  # (N_lines, N_hpe)
+            max_hyp = sims_hyp.max(axis=0)  # (N_hpe,)
+            max_sim = np.maximum(max_name, max_hyp)
+        else:
+            max_sim = max_name
+
+        novelty = 1.0 - np.clip(max_sim, 0.0, 1.0)
+        return novelty
+
+    def rank_hpe(self, candidates: list, novelty_hpe: np.ndarray = None) -> list:
+        """
+        Part D: 問診・身体診察推奨ランキング。
+        Part Aと同一数学（prior加重分散）。quality/risk_relevance不要（非侵襲）。
+
+        utility = variance × novelty
+        """
+        if self.sim_matrix_hpe is None or len(self.hpe_names) == 0:
+            return []
+
+        n_hpe = len(self.hpe_names)
+        if novelty_hpe is None:
+            novelty_hpe = np.ones(n_hpe)
+
+        # 重み: 局所重み × 2C重み（Part Aと完全同一）
+        raw_sims = np.array([c.get("similarity", 0.0) for c in candidates], dtype=float)
+        weights = np.array([
+            self.disease_2c.get(c["disease_name"], {}).get("weight", 1.0)
+            for c in candidates
+        ], dtype=float)
+        sim_centered = np.maximum(0.0, raw_sims - raw_sims.mean())
+        w = sim_centered * weights
+        w_sum = w.sum()
+        if w_sum > 0:
+            w = w / w_sum
+
+        # sim_matrix_hpe行を取得
+        disease_rows = []
+        for c in candidates:
+            row = self.disease_idx.get(c["disease_name"])
+            disease_rows.append(row if row is not None else -1)
+        disease_rows = np.array(disease_rows)
+
+        valid_mask = disease_rows >= 0
+        sim_sub = np.zeros((len(candidates), n_hpe))
+        sim_sub[valid_mask] = self.sim_matrix_hpe[disease_rows[valid_mask]]
+
+        # prior加重分散
+        w_col = w[:, np.newaxis]
+        mu = (w_col * sim_sub).sum(axis=0)
+        var = (w_col * (sim_sub - mu) ** 2).sum(axis=0)
+
+        # 関連疾患
+        weighted_contrib = w_col * sim_sub
+
+        ranked = []
+        for k, item in enumerate(self.hpe_items):
+            score = float(var[k])
+            nov = float(novelty_hpe[k])
+            utility = score * nov
+
+            # 関連疾患Top5
+            contribs = weighted_contrib[:, k]
+            top_idx = np.argsort(contribs)[::-1][:5]
+            details = [
+                {"disease_name": candidates[int(i)]["disease_name"],
+                 "contribution": round(float(contribs[i]), 6)}
+                for i in top_idx if contribs[i] > 0
+            ]
+
+            ranked.append({
+                "item_name": item["item_name"],
+                "category": item["category"],
+                "subcategory": item["subcategory"],
+                "instruction": item.get("instruction", ""),
+                "score": round(score, 6),
+                "novelty": round(nov, 4),
+                "utility": round(utility, 6),
+                "details": details,
+            })
+
+        ranked.sort(key=lambda x: x["utility"], reverse=True)
+        return ranked

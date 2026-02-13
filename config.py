@@ -18,6 +18,11 @@ LLM_FALLBACK_API_KEY = os.environ.get("LLM_FALLBACK_API_KEY", "REDACTED_FALLBACK
 LLM_FALLBACK_BASE_URL = os.environ.get("LLM_FALLBACK_BASE_URL", "https://api.12ai.org/v1")
 LLM_FALLBACK_MODEL = os.environ.get("LLM_FALLBACK_MODEL", "gemini-3-pro-preview")
 
+# Claude API設定（高品質メタデータ生成用）
+CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY", "REDACTED_CLAUDE_KEY")
+CLAUDE_BASE_URL = os.environ.get("CLAUDE_BASE_URL", "https://gobuild.club/v1")
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-4-6-thinking")
+
 # Embedding API設定
 EMBEDDING_API_KEY = os.environ.get("EMBEDDING_API_KEY", "REDACTED_EMBEDDING_KEY")
 EMBEDDING_BASE_URL = os.environ.get("EMBEDDING_BASE_URL", "https://openrouter.ai/api/v1")
@@ -36,6 +41,7 @@ DATA_DIR = os.path.join(PROJECT_DIR, "data")
 DISEASES_JSONL = os.path.join(DATA_DIR, "diseases.jsonl")
 TESTS_JSONL = os.path.join(DATA_DIR, "tests.jsonl")
 FINDINGS_JSONL = os.path.join(DATA_DIR, "findings.jsonl")
+HPE_ITEMS_JSONL = os.path.join(DATA_DIR, "hpe_items.jsonl")
 CHROMA_DIR = os.path.join(DATA_DIR, "chroma_db")
 DISEASE_LIST_FILE = os.path.join(PROJECT_DIR, "疾患リスト.txt")
 TEST_LIST_FILE = os.path.join(PROJECT_DIR, "検査リスト.txt")

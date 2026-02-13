@@ -1,0 +1,274 @@
+{"item_name":"突然発症（数秒）","category":"Hx","subcategory":"OPQRST:Onset","hypothesis":"突然発症 数秒で最大に達する 雷鳴様","instruction":"発症の瞬間を特定できるか？秒単位で最大か？"}
+{"item_name":"急性発症（分〜時間）","category":"Hx","subcategory":"OPQRST:Onset","hypothesis":"急性発症 分から時間単位で進行 増悪","instruction":"何分〜何時間で症状が完成したか？"}
+{"item_name":"亜急性発症（日〜週）","category":"Hx","subcategory":"OPQRST:Onset","hypothesis":"亜急性発症 日から週単位で徐々に進行","instruction":"日〜週単位で徐々に悪化？"}
+{"item_name":"緩徐発症（週〜月）","category":"Hx","subcategory":"OPQRST:Onset","hypothesis":"緩徐発症 週から月単位で緩やかに進行","instruction":"いつ頃から気になり始めた？"}
+{"item_name":"間欠的再発","category":"Hx","subcategory":"OPQRST:Onset","hypothesis":"間欠的 再発 寛解と増悪を繰り返す 反復性","instruction":"同様のエピソードが以前にもあったか？"}
+{"item_name":"労作時増悪","category":"Hx","subcategory":"OPQRST:Provocation","hypothesis":"労作時増悪 運動 歩行 階段昇降で悪化 安静で改善","instruction":"動いた時に悪くなるか？階段や歩行で？"}
+{"item_name":"安静時発症","category":"Hx","subcategory":"OPQRST:Provocation","hypothesis":"安静時発症 安静時に出現 労作と無関係 夜間","instruction":"安静にしている時にも症状が出るか？"}
+{"item_name":"食後増悪","category":"Hx","subcategory":"OPQRST:Provocation","hypothesis":"食後増悪 食事摂取後に症状出現 脂肪食 アルコール","instruction":"食事との関連は？特に脂っこい食事の後は？"}
+{"item_name":"前屈位で軽快","category":"Hx","subcategory":"OPQRST:Provocation","hypothesis":"前屈位で軽快 座位前傾姿勢で改善 膵炎 心膜炎","instruction":"前かがみの姿勢で楽になるか？"}
+{"item_name":"深呼吸時増悪","category":"Hx","subcategory":"OPQRST:Provocation","hypothesis":"深呼吸時増悪 吸気時に疼痛増強 胸膜痛 pleuritic","instruction":"深く息を吸うと痛みが強くなるか？"}
+{"item_name":"体位変換で増悪","category":"Hx","subcategory":"OPQRST:Provocation","hypothesis":"体位変換で増悪 頭位変換で誘発 回転性めまい","instruction":"寝返りや頭を動かすと悪化するか？"}
+{"item_name":"Valsalva手技で増悪","category":"Hx","subcategory":"OPQRST:Provocation","hypothesis":"Valsalva手技 いきみ 咳嗽 排便時に増悪 頭蓋内圧","instruction":"いきんだり咳をすると悪化するか？"}
+{"item_name":"寒冷曝露で誘発","category":"Hx","subcategory":"OPQRST:Provocation","hypothesis":"寒冷曝露 冷気 冷水で症状誘発 冠攣縮 Raynaud","instruction":"寒さにさらされた時に症状が出るか？"}
+{"item_name":"ストレス・情動で誘発","category":"Hx","subcategory":"OPQRST:Provocation","hypothesis":"ストレス 情動 精神的緊張 興奮で症状誘発","instruction":"精神的なストレスや興奮と関連するか？"}
+{"item_name":"ニトログリセリン反応性","category":"Hx","subcategory":"OPQRST:Provocation","hypothesis":"ニトログリセリン舌下で軽快 胸痛消失 狭心症","instruction":"ニトロで症状は改善するか？"}
+{"item_name":"制酸薬で軽快","category":"Hx","subcategory":"OPQRST:Provocation","hypothesis":"制酸薬 PPI H2RA内服で軽快 胃酸関連","instruction":"胃薬で症状は改善するか？"}
+{"item_name":"絞扼感・圧迫感","category":"Hx","subcategory":"OPQRST:Quality","hypothesis":"絞扼感 圧迫感 締め付けられる 重苦しい 胸が詰まる","instruction":"締め付けられる感じ？圧迫される感じ？"}
+{"item_name":"拍動性","category":"Hx","subcategory":"OPQRST:Quality","hypothesis":"拍動性 ズキズキ 脈打つような 片頭痛","instruction":"ズキズキと脈打つような痛みか？"}
+{"item_name":"裂けるような","category":"Hx","subcategory":"OPQRST:Quality","hypothesis":"裂けるような 引き裂かれる 移動する痛み 大動脈解離","instruction":"引き裂かれるような痛みか？痛みが移動するか？"}
+{"item_name":"刺すような","category":"Hx","subcategory":"OPQRST:Quality","hypothesis":"刺すような 鋭い痛み 電撃様 限局性","instruction":"刺すような鋭い痛みか？"}
+{"item_name":"灼熱感","category":"Hx","subcategory":"OPQRST:Quality","hypothesis":"灼熱感 焼けるような ヒリヒリ GERD 神経痛","instruction":"焼けるような熱い感じか？"}
+{"item_name":"鈍痛・重い","category":"Hx","subcategory":"OPQRST:Quality","hypothesis":"鈍痛 重い感じ 漠然とした不快感 内臓痛","instruction":"鈍い重苦しい感じか？"}
+{"item_name":"疝痛・間欠的激痛","category":"Hx","subcategory":"OPQRST:Quality","hypothesis":"疝痛 間欠的激痛 波のある痛み 腸管 尿管 胆管","instruction":"波のように強くなったり弱くなったりするか？"}
+{"item_name":"えぐられるような","category":"Hx","subcategory":"OPQRST:Quality","hypothesis":"えぐられるような 貫通するような 穿通痛 深部痛","instruction":"えぐられるような深い痛みか？"}
+{"item_name":"胸骨後部痛","category":"Hx","subcategory":"OPQRST:Region","hypothesis":"胸骨後部痛 前胸部 胸の真ん中 retrosternal","instruction":"胸の真ん中あたりの痛みか？"}
+{"item_name":"左肩・左腕放散","category":"Hx","subcategory":"OPQRST:Region","hypothesis":"左肩 左腕 左顎への放散痛 心筋梗塞 狭心症","instruction":"左の肩や腕、顎に痛みが広がるか？"}
+{"item_name":"心窩部痛","category":"Hx","subcategory":"OPQRST:Region","hypothesis":"心窩部痛 みぞおちの痛み 上腹部痛 epigastric","instruction":"みぞおちのあたりが痛いか？"}
+{"item_name":"背部放散","category":"Hx","subcategory":"OPQRST:Region","hypothesis":"背部放散 背中に突き抜ける痛み 膵臓 大動脈","instruction":"背中に痛みが抜けるか？"}
+{"item_name":"右下腹部痛","category":"Hx","subcategory":"OPQRST:Region","hypothesis":"右下腹部痛 McBurney点 右腸骨窩 虫垂炎","instruction":"右下のお腹が痛いか？"}
+{"item_name":"左下腹部痛","category":"Hx","subcategory":"OPQRST:Region","hypothesis":"左下腹部痛 S状結腸部 左腸骨窩 憩室炎","instruction":"左下のお腹が痛いか？"}
+{"item_name":"側腹部痛","category":"Hx","subcategory":"OPQRST:Region","hypothesis":"側腹部痛 CVA叩打痛部 腎部痛 腎盂腎炎 腎結石","instruction":"脇腹・腰のあたりが痛いか？"}
+{"item_name":"びまん性腹痛","category":"Hx","subcategory":"OPQRST:Region","hypothesis":"びまん性腹痛 腹部全体 汎発性 腹膜炎","instruction":"お腹全体が痛いか？"}
+{"item_name":"後頭部痛","category":"Hx","subcategory":"OPQRST:Region","hypothesis":"後頭部痛 項部 うなじの痛み くも膜下出血 髄膜炎","instruction":"後頭部やうなじが痛いか？"}
+{"item_name":"片側頭痛","category":"Hx","subcategory":"OPQRST:Region","hypothesis":"片側頭痛 一側性 こめかみ 片頭痛","instruction":"頭の片側だけが痛いか？"}
+{"item_name":"眼窩周囲痛","category":"Hx","subcategory":"OPQRST:Region","hypothesis":"眼窩周囲痛 眼の奥 眼窩部 群発頭痛 副鼻腔炎","instruction":"目の奥が痛いか？"}
+{"item_name":"多関節痛","category":"Hx","subcategory":"OPQRST:Region","hypothesis":"多関節痛 複数の関節 対称性 RA SLE","instruction":"複数の関節が痛むか？左右対称か？"}
+{"item_name":"単関節痛","category":"Hx","subcategory":"OPQRST:Region","hypothesis":"単関節痛 一つの関節のみ 急性 痛風 化膿性関節炎","instruction":"一つの関節だけが痛むか？どの関節か？"}
+{"item_name":"人生最悪の痛み","category":"Hx","subcategory":"OPQRST:Severity","hypothesis":"人生最悪の痛み 今まで経験したことのない 激烈 thunderclap","instruction":"今まで経験した中で最悪の痛みか？"}
+{"item_name":"進行性増悪","category":"Hx","subcategory":"OPQRST:Severity","hypothesis":"進行性増悪 時間とともに悪化 改善しない 持続的増強","instruction":"時間が経つにつれ悪くなっているか？"}
+{"item_name":"持続性（>20分）","category":"Hx","subcategory":"OPQRST:Time","hypothesis":"持続性 20分以上持続 改善しない 心筋梗塞","instruction":"20分以上続いているか？一時的に良くなることはあるか？"}
+{"item_name":"反復性エピソード","category":"Hx","subcategory":"OPQRST:Time","hypothesis":"反復性 以前も同様のエピソード 再発 胆石 腎石","instruction":"以前にも同じような症状があったか？"}
+{"item_name":"早朝・夜間増悪","category":"Hx","subcategory":"OPQRST:Time","hypothesis":"早朝 朝方 夜間増悪 起床時 喘息 心不全","instruction":"朝方や夜間に特に悪化するか？"}
+{"item_name":"食事との時間関係","category":"Hx","subcategory":"OPQRST:Time","hypothesis":"食事との時間関係 食前 食後 空腹時 食後数時間","instruction":"食事の前後で変化するか？食後何時間で？"}
+{"item_name":"NSAIDs","category":"Hx","subcategory":"薬剤歴","hypothesis":"NSAIDs 非ステロイド性抗炎症薬 ロキソプロフェン イブプロフェン 長期服用 消化管出血","instruction":"ロキソニンやイブプロフェンなどの痛み止めを飲んでいるか？"}
+{"item_name":"ACE阻害薬","category":"Hx","subcategory":"薬剤歴","hypothesis":"ACE阻害薬 エナラプリル リシノプリル 服用中 咳嗽 血管浮腫","instruction":"ACE阻害薬（〜プリル）を飲んでいるか？"}
+{"item_name":"ARB","category":"Hx","subcategory":"薬剤歴","hypothesis":"ARB アンジオテンシンII受容体拮抗薬 バルサルタン カンデサルタン 服用中","instruction":"ARB（〜サルタン）を飲んでいるか？"}
+{"item_name":"β遮断薬","category":"Hx","subcategory":"薬剤歴","hypothesis":"β遮断薬 メトプロロール ビソプロロール カルベジロール 服用中 徐脈","instruction":"β遮断薬（〜ロール）を飲んでいるか？"}
+{"item_name":"Ca拮抗薬","category":"Hx","subcategory":"薬剤歴","hypothesis":"Ca拮抗薬 アムロジピン ニフェジピン 服用中 浮腫","instruction":"Ca拮抗薬（アムロジピンなど）を飲んでいるか？"}
+{"item_name":"ループ利尿薬","category":"Hx","subcategory":"薬剤歴","hypothesis":"ループ利尿薬 フロセミド 服用中 電解質異常 脱水","instruction":"フロセミドなどの利尿薬を飲んでいるか？"}
+{"item_name":"チアジド系利尿薬","category":"Hx","subcategory":"薬剤歴","hypothesis":"チアジド系利尿薬 ヒドロクロロチアジド 服用中 低Na 低K 高尿酸","instruction":"チアジド系利尿薬を飲んでいるか？"}
+{"item_name":"ワルファリン","category":"Hx","subcategory":"薬剤歴","hypothesis":"ワルファリン 抗凝固薬 服用中 PT-INR管理 出血リスク","instruction":"ワルファリンを飲んでいるか？"}
+{"item_name":"DOAC","category":"Hx","subcategory":"薬剤歴","hypothesis":"DOAC 直接経口抗凝固薬 リバーロキサバン アピキサバン エドキサバン 服用中","instruction":"DOAC（リバーロキサバンなど）を飲んでいるか？"}
+{"item_name":"抗血小板薬","category":"Hx","subcategory":"薬剤歴","hypothesis":"抗血小板薬 アスピリン クロピドグレル 服用中 出血リスク","instruction":"アスピリンやクロピドグレルを飲んでいるか？"}
+{"item_name":"ステロイド","category":"Hx","subcategory":"薬剤歴","hypothesis":"ステロイド プレドニゾロン デキサメタゾン 長期服用 免疫抑制 副腎不全","instruction":"ステロイド（プレドニンなど）を飲んでいるか？量と期間は？"}
+{"item_name":"免疫抑制薬","category":"Hx","subcategory":"薬剤歴","hypothesis":"免疫抑制薬 アザチオプリン シクロスポリン タクロリムス MTX 服用中 日和見感染","instruction":"免疫抑制薬を使用しているか？"}
+{"item_name":"経口避妊薬/HRT","category":"Hx","subcategory":"薬剤歴","hypothesis":"経口避妊薬 OCP ホルモン補充療法 HRT エストロゲン 服用中 血栓リスク","instruction":"ピルやホルモン補充療法を使用しているか？"}
+{"item_name":"スタチン","category":"Hx","subcategory":"薬剤歴","hypothesis":"スタチン HMG-CoA還元酵素阻害薬 アトルバスタチン ロスバスタチン 服用中 横紋筋融解","instruction":"コレステロールの薬（スタチン）を飲んでいるか？"}
+{"item_name":"PPI","category":"Hx","subcategory":"薬剤歴","hypothesis":"PPI プロトンポンプ阻害薬 オメプラゾール ランソプラゾール 服用中 Mg低下 骨折","instruction":"胃酸を抑える薬（PPI）を飲んでいるか？"}
+{"item_name":"インスリン","category":"Hx","subcategory":"薬剤歴","hypothesis":"インスリン 注射 自己注射 低血糖リスク 糖尿病治療","instruction":"インスリン注射をしているか？種類と単位数は？"}
+{"item_name":"SU薬","category":"Hx","subcategory":"薬剤歴","hypothesis":"SU薬 スルホニルウレア グリメピリド グリクラジド 低血糖リスク","instruction":"SU薬（グリメピリドなど）を飲んでいるか？"}
+{"item_name":"SGLT2阻害薬","category":"Hx","subcategory":"薬剤歴","hypothesis":"SGLT2阻害薬 エンパグリフロジン ダパグリフロジン 服用中 ケトアシドーシス 脱水","instruction":"SGLT2阻害薬（〜フロジン）を飲んでいるか？"}
+{"item_name":"GLP-1受容体作動薬","category":"Hx","subcategory":"薬剤歴","hypothesis":"GLP-1受容体作動薬 リラグルチド セマグルチド 服用中 膵炎リスク","instruction":"GLP-1受容体作動薬を使用しているか？"}
+{"item_name":"甲状腺ホルモン","category":"Hx","subcategory":"薬剤歴","hypothesis":"甲状腺ホルモン レボチロキシン 甲状腺機能低下症治療 服用中","instruction":"甲状腺の薬（チラーヂンなど）を飲んでいるか？"}
+{"item_name":"抗甲状腺薬","category":"Hx","subcategory":"薬剤歴","hypothesis":"抗甲状腺薬 チアマゾール プロピルチオウラシル MMI PTU 服用中 無顆粒球症","instruction":"抗甲状腺薬（メルカゾールなど）を飲んでいるか？"}
+{"item_name":"抗てんかん薬","category":"Hx","subcategory":"薬剤歴","hypothesis":"抗てんかん薬 バルプロ酸 カルバマゼピン フェニトイン レベチラセタム 服用中","instruction":"抗てんかん薬を飲んでいるか？"}
+{"item_name":"抗精神病薬","category":"Hx","subcategory":"薬剤歴","hypothesis":"抗精神病薬 リスペリドン オランザピン クエチアピン 服用中 QT延長 代謝症候群","instruction":"抗精神病薬を飲んでいるか？"}
+{"item_name":"SSRI/SNRI","category":"Hx","subcategory":"薬剤歴","hypothesis":"SSRI SNRI 抗うつ薬 パロキセチン セルトラリン デュロキセチン 服用中 セロトニン症候群","instruction":"抗うつ薬を飲んでいるか？"}
+{"item_name":"リチウム","category":"Hx","subcategory":"薬剤歴","hypothesis":"リチウム 炭酸リチウム 服用中 リチウム中毒 腎障害 甲状腺機能低下","instruction":"リチウムを飲んでいるか？"}
+{"item_name":"化学療法薬","category":"Hx","subcategory":"薬剤歴","hypothesis":"化学療法 抗がん剤 好中球減少 骨髄抑制 発熱性好中球減少症","instruction":"抗がん剤治療を受けているか？最終投与はいつ？"}
+{"item_name":"免疫チェックポイント阻害薬","category":"Hx","subcategory":"薬剤歴","hypothesis":"免疫チェックポイント阻害薬 ニボルマブ ペムブロリズマブ irAE 免疫関連有害事象","instruction":"免疫チェックポイント阻害薬を使用しているか？"}
+{"item_name":"生物学的製剤","category":"Hx","subcategory":"薬剤歴","hypothesis":"生物学的製剤 TNF阻害薬 インフリキシマブ アダリムマブ 免疫抑制 結核再活性化","instruction":"生物学的製剤を使用しているか？"}
+{"item_name":"最近の抗菌薬使用","category":"Hx","subcategory":"薬剤歴","hypothesis":"最近の抗菌薬使用 耐性菌リスク Clostridioides difficile CDI","instruction":"最近抗菌薬を飲んだか？いつからいつまで？"}
+{"item_name":"アミオダロン","category":"Hx","subcategory":"薬剤歴","hypothesis":"アミオダロン 服用中 甲状腺機能異常 肺線維症 肝障害 QT延長","instruction":"アミオダロンを飲んでいるか？"}
+{"item_name":"現在喫煙","category":"Hx","subcategory":"嗜好/社会歴","hypothesis":"現在喫煙 喫煙者 ニコチン依存 pack-year 本数 年数","instruction":"現在タバコを吸っているか？1日何本×何年？"}
+{"item_name":"過去喫煙","category":"Hx","subcategory":"嗜好/社会歴","hypothesis":"過去喫煙 禁煙 元喫煙者 累積曝露量","instruction":"以前タバコを吸っていたか？いつ禁煙？累積量は？"}
+{"item_name":"飲酒（常習）","category":"Hx","subcategory":"嗜好/社会歴","hypothesis":"飲酒 常習的 アルコール エタノール 毎日 肝障害 膵炎","instruction":"お酒を飲むか？毎日？量は？"}
+{"item_name":"大量飲酒/暴飲","category":"Hx","subcategory":"嗜好/社会歴","hypothesis":"大量飲酒 暴飲 binge drinking アルコール依存 離脱","instruction":"一度に大量に飲むことがあるか？"}
+{"item_name":"コカイン/覚醒剤","category":"Hx","subcategory":"嗜好/社会歴","hypothesis":"コカイン 覚醒剤 アンフェタミン 違法薬物 冠攣縮 高血圧クリーゼ","instruction":"違法薬物の使用歴は？"}
+{"item_name":"静注薬物使用(IVDU)","category":"Hx","subcategory":"嗜好/社会歴","hypothesis":"静注薬物使用 IVDU 注射器共有 感染性心内膜炎 HIV HCV リスク","instruction":"注射による薬物使用歴は？"}
+{"item_name":"職業曝露","category":"Hx","subcategory":"嗜好/社会歴","hypothesis":"職業曝露 粉塵 アスベスト 化学物質 有機溶剤 騒音 交代勤務","instruction":"仕事で粉塵や化学物質に触れるか？交代勤務か？"}
+{"item_name":"医療従事者","category":"Hx","subcategory":"嗜好/社会歴","hypothesis":"医療従事者 針刺し 感染曝露 病院勤務 結核 HBV","instruction":"医療関係の仕事か？針刺し事故歴は？"}
+{"item_name":"渡航歴（熱帯/途上国）","category":"Hx","subcategory":"嗜好/社会歴","hypothesis":"渡航歴 熱帯 途上国 マラリア デング熱 腸チフス アメーバ","instruction":"最近海外渡航したか？熱帯地域は？いつ帰国？"}
+{"item_name":"長時間不動/長距離移動","category":"Hx","subcategory":"嗜好/社会歴","hypothesis":"長時間不動 長距離移動 飛行機 エコノミークラス DVT PE 血栓","instruction":"長時間座りっぱなし・飛行機・車での移動は？"}
+{"item_name":"菜食/偏食","category":"Hx","subcategory":"嗜好/社会歴","hypothesis":"菜食 ビーガン 偏食 栄養欠乏 鉄欠乏 B12欠乏 葉酸欠乏","instruction":"菜食主義か？偏食はあるか？"}
+{"item_name":"生食/非加熱食品","category":"Hx","subcategory":"嗜好/社会歴","hypothesis":"生食 生肉 生魚 非加熱乳製品 Listeria Vibrio Anisakis","instruction":"生ものを食べたか？非加熱の乳製品は？"}
+{"item_name":"集団生活","category":"Hx","subcategory":"嗜好/社会歴","hypothesis":"集団生活 寮 軍隊 刑務所 密集環境 飛沫感染 髄膜炎菌","instruction":"寮や集団生活をしているか？"}
+{"item_name":"ペット飼育","category":"Hx","subcategory":"嗜好/社会歴","hypothesis":"ペット飼育 犬 猫 鳥 爬虫類 人畜共通感染症 Pasteurella","instruction":"ペットを飼っているか？犬・猫・鳥・爬虫類？"}
+{"item_name":"性行為歴","category":"Hx","subcategory":"嗜好/社会歴","hypothesis":"性行為歴 STI リスク 不特定多数 コンドーム未使用 HIV 梅毒","instruction":"性行為に関するリスクは？"}
+{"item_name":"妊娠・授乳中","category":"Hx","subcategory":"嗜好/社会歴","hypothesis":"妊娠中 授乳中 妊娠合併症 HELLP 妊娠高血圧症候群 子癇","instruction":"妊娠の可能性は？最終月経は？"}
+{"item_name":"高血圧","category":"Hx","subcategory":"既往歴","hypothesis":"高血圧 血圧管理不良 臓器障害 動脈硬化","instruction":"高血圧の既往は？治療中か？コントロール状況は？"}
+{"item_name":"糖尿病","category":"Hx","subcategory":"既往歴","hypothesis":"糖尿病 2型糖尿病 HbA1c上昇 血糖管理不良 合併症","instruction":"糖尿病の既往は？HbA1cは？合併症は？"}
+{"item_name":"脂質異常症","category":"Hx","subcategory":"既往歴","hypothesis":"脂質異常症 高コレステロール血症 高LDL 動脈硬化リスク","instruction":"コレステロールが高いと言われたことは？"}
+{"item_name":"冠動脈疾患","category":"Hx","subcategory":"既往歴","hypothesis":"冠動脈疾患 狭心症 心筋梗塞既往 PCI CABG ステント","instruction":"狭心症や心筋梗塞の既往は？PCI/CABGは？"}
+{"item_name":"心不全","category":"Hx","subcategory":"既往歴","hypothesis":"心不全 左室機能低下 EF低下 うっ血 BNP上昇","instruction":"心不全と言われたことは？入院歴は？"}
+{"item_name":"心房細動","category":"Hx","subcategory":"既往歴","hypothesis":"心房細動 AF 不整脈 塞栓リスク 抗凝固療法","instruction":"心房細動の既往は？抗凝固薬は飲んでいるか？"}
+{"item_name":"弁膜症/人工弁","category":"Hx","subcategory":"既往歴","hypothesis":"弁膜症 僧帽弁 大動脈弁 人工弁 感染性心内膜炎リスク","instruction":"心臓弁膜症は？人工弁は入っているか？"}
+{"item_name":"DVT/PE既往","category":"Hx","subcategory":"既往歴","hypothesis":"深部静脈血栓症 DVT 肺血栓塞栓症 PE 既往 再発リスク 凝固異常","instruction":"血栓症（DVT/PE）の既往は？"}
+{"item_name":"喘息","category":"Hx","subcategory":"既往歴","hypothesis":"喘息 気管支喘息 吸入ステロイド 発作 入院歴 挿管歴","instruction":"喘息の既往は？最近の発作は？"}
+{"item_name":"COPD","category":"Hx","subcategory":"既往歴","hypothesis":"COPD 慢性閉塞性肺疾患 肺気腫 慢性気管支炎 在宅酸素","instruction":"COPDの既往は？在宅酸素は？"}
+{"item_name":"消化性潰瘍","category":"Hx","subcategory":"既往歴","hypothesis":"消化性潰瘍 胃潰瘍 十二指腸潰瘍 H.pylori 出血既往","instruction":"胃・十二指腸潰瘍の既往は？出血歴は？"}
+{"item_name":"肝疾患","category":"Hx","subcategory":"既往歴","hypothesis":"肝疾患 肝硬変 慢性肝炎 B型肝炎 C型肝炎 アルコール性肝障害","instruction":"肝臓の病気は？B型C型肝炎は？"}
+{"item_name":"炎症性腸疾患","category":"Hx","subcategory":"既往歴","hypothesis":"炎症性腸疾患 IBD 潰瘍性大腸炎 クローン病 腸管外合併症","instruction":"潰瘍性大腸炎やクローン病の既往は？"}
+{"item_name":"CKD","category":"Hx","subcategory":"既往歴","hypothesis":"CKD 慢性腎臓病 腎機能低下 eGFR低下 透析 腎移植","instruction":"腎臓の病気は？透析歴は？eGFRは？"}
+{"item_name":"腎結石","category":"Hx","subcategory":"既往歴","hypothesis":"腎結石 尿路結石 再発性 体外衝撃波砕石術","instruction":"尿路結石の既往は？再発は？"}
+{"item_name":"脳卒中","category":"Hx","subcategory":"既往歴","hypothesis":"脳卒中 脳梗塞 脳出血 既往 後遺症 片麻痺","instruction":"脳卒中（脳梗塞・脳出血）の既往は？後遺症は？"}
+{"item_name":"てんかん","category":"Hx","subcategory":"既往歴","hypothesis":"てんかん 痙攣発作 既往 抗てんかん薬 最終発作","instruction":"てんかん・痙攣の既往は？最終発作はいつ？"}
+{"item_name":"関節リウマチ","category":"Hx","subcategory":"既往歴","hypothesis":"関節リウマチ RA 自己免疫 MTX 生物学的製剤 関節変形","instruction":"関節リウマチの既往は？治療薬は？"}
+{"item_name":"SLE/膠原病","category":"Hx","subcategory":"既往歴","hypothesis":"全身性エリテマトーデス SLE 膠原病 自己免疫疾患 ループス腎炎","instruction":"膠原病やSLEの既往は？"}
+{"item_name":"甲状腺疾患","category":"Hx","subcategory":"既往歴","hypothesis":"甲状腺疾患 甲状腺機能亢進症 低下症 バセドウ病 橋本病","instruction":"甲状腺の病気は？バセドウ病や橋本病は？"}
+{"item_name":"悪性腫瘍","category":"Hx","subcategory":"既往歴","hypothesis":"悪性腫瘍 がん 癌 既往 化学療法 放射線治療 転移","instruction":"がんの既往は？種類と治療歴は？"}
+{"item_name":"HIV/AIDS","category":"Hx","subcategory":"既往歴","hypothesis":"HIV AIDS 免疫不全 日和見感染 CD4低下 抗レトロウイルス","instruction":"HIV感染症は？CD4数は？ART治療中か？"}
+{"item_name":"脾摘後","category":"Hx","subcategory":"既往歴","hypothesis":"脾摘後 脾臓摘出 莢膜菌感染リスク 肺炎球菌 髄膜炎菌","instruction":"脾臓を摘出したことは？ワクチン接種は？"}
+{"item_name":"胃切除後","category":"Hx","subcategory":"既往歴","hypothesis":"胃切除後 胃全摘 吸収障害 B12欠乏 鉄欠乏 ダンピング","instruction":"胃の手術歴は？全摘か部分切除か？"}
+{"item_name":"最近の手術","category":"Hx","subcategory":"既往歴","hypothesis":"最近の手術 術後 4週間以内 DVT PE 感染リスク 全身麻酔","instruction":"最近手術を受けたか？いつ？何の手術？"}
+{"item_name":"最近の入院/カテーテル","category":"Hx","subcategory":"既往歴","hypothesis":"最近の入院 中心静脈カテーテル 尿道カテーテル 院内感染 耐性菌","instruction":"最近入院したか？カテーテルは入っていたか？"}
+{"item_name":"凝固異常/血栓性素因","category":"Hx","subcategory":"既往歴","hypothesis":"凝固異常 血栓性素因 プロテインC S欠乏 抗リン脂質抗体症候群 Factor V Leiden","instruction":"血が固まりやすい体質と言われたことは？"}
+{"item_name":"アレルギー歴","category":"Hx","subcategory":"既往歴","hypothesis":"アレルギー歴 薬剤アレルギー 食物アレルギー アナフィラキシー既往","instruction":"アレルギーは？薬や食物で反応したことは？"}
+{"item_name":"若年心血管疾患","category":"Hx","subcategory":"家族歴","hypothesis":"家族歴 若年心筋梗塞 55歳未満男性 65歳未満女性 心臓突然死","instruction":"血縁者に若くして心臓病や突然死の方は？"}
+{"item_name":"悪性腫瘍家族歴","category":"Hx","subcategory":"家族歴","hypothesis":"家族歴 がん 悪性腫瘍 遺伝性腫瘍 BRCA Lynch","instruction":"血縁者にがんの方は？種類と発症年齢は？"}
+{"item_name":"自己免疫疾患家族歴","category":"Hx","subcategory":"家族歴","hypothesis":"家族歴 自己免疫疾患 膠原病 甲状腺疾患 1型糖尿病","instruction":"血縁者に自己免疫疾患の方は？"}
+{"item_name":"血栓症家族歴","category":"Hx","subcategory":"家族歴","hypothesis":"家族歴 血栓症 DVT PE 若年発症 凝固異常","instruction":"血縁者に血栓症の方は？"}
+{"item_name":"突然死家族歴","category":"Hx","subcategory":"家族歴","hypothesis":"家族歴 突然死 心臓突然死 若年 不整脈 肥大型心筋症","instruction":"血縁者に若くして突然亡くなった方は？"}
+{"item_name":"脳血管疾患家族歴","category":"Hx","subcategory":"家族歴","hypothesis":"家族歴 脳卒中 くも膜下出血 脳動脈瘤 遺伝的素因","instruction":"血縁者に脳卒中やくも膜下出血の方は？"}
+{"item_name":"発熱","category":"Hx","subcategory":"ROS:全身","hypothesis":"発熱 高体温 悪寒 戦慄 解熱薬反応 間欠熱 弛張熱","instruction":"熱はあるか？悪寒や震えは？解熱薬の効果は？"}
+{"item_name":"体重減少","category":"Hx","subcategory":"ROS:全身","hypothesis":"体重減少 意図しない 数か月 食欲低下 悪液質 悪性腫瘍","instruction":"体重は減ったか？何kg減った？期間は？"}
+{"item_name":"体重増加","category":"Hx","subcategory":"ROS:全身","hypothesis":"体重増加 浮腫 腹水 全身性浮腫 甲状腺機能低下","instruction":"体重は増えたか？むくみは？"}
+{"item_name":"倦怠感","category":"Hx","subcategory":"ROS:全身","hypothesis":"倦怠感 全身倦怠 易疲労 だるい 活動量低下","instruction":"だるさや疲れやすさは？日常生活に支障は？"}
+{"item_name":"盗汗","category":"Hx","subcategory":"ROS:全身","hypothesis":"盗汗 寝汗 夜間発汗 結核 悪性リンパ腫 B症状","instruction":"寝汗をかくか？着替えが必要なほどか？"}
+{"item_name":"頭痛","category":"Hx","subcategory":"ROS:頭頸","hypothesis":"頭痛 頭の痛み 偏頭痛 緊張型 群発 二次性","instruction":"頭痛はあるか？いつもの頭痛と違うか？"}
+{"item_name":"めまい（回転性）","category":"Hx","subcategory":"ROS:頭頸","hypothesis":"めまい 回転性 ぐるぐる 天井が回る BPPV メニエール","instruction":"ぐるぐる回る感じのめまいか？"}
+{"item_name":"めまい（浮動性）","category":"Hx","subcategory":"ROS:頭頸","hypothesis":"めまい 浮動性 ふわふわ ふらつき 起立性低血圧","instruction":"ふわふわするめまいか？立ちくらみか？"}
+{"item_name":"嚥下困難","category":"Hx","subcategory":"ROS:頭頸","hypothesis":"嚥下困難 飲み込みにくい 食事がつかえる 固形物 液体","instruction":"飲み込みにくさは？固形物？液体？"}
+{"item_name":"嗄声","category":"Hx","subcategory":"ROS:頭頸","hypothesis":"嗄声 声がれ 声の変化 反回神経麻痺 喉頭","instruction":"声がかすれるか？いつから？"}
+{"item_name":"頸部腫脹","category":"Hx","subcategory":"ROS:頭頸","hypothesis":"頸部腫脹 甲状腺腫 頸部リンパ節腫大 頸部腫瘤","instruction":"首の腫れやしこりに気づいたか？"}
+{"item_name":"視力変化","category":"Hx","subcategory":"ROS:眼","hypothesis":"視力変化 視力低下 霧視 複視 飛蚊症 光視症","instruction":"見え方に変化は？かすみ目？二重に見える？"}
+{"item_name":"眼痛","category":"Hx","subcategory":"ROS:眼","hypothesis":"眼痛 眼の痛み 充血 涙 羞明 急性緑内障","instruction":"目の痛みは？充血は？光がまぶしいか？"}
+{"item_name":"咳嗽","category":"Hx","subcategory":"ROS:胸部","hypothesis":"咳嗽 咳 乾性咳嗽 湿性咳嗽 遷延性 3週間以上","instruction":"咳は出るか？痰は絡むか？いつから？"}
+{"item_name":"喀痰","category":"Hx","subcategory":"ROS:胸部","hypothesis":"喀痰 痰 膿性 血痰 量 色 粘稠度","instruction":"痰の色は？量は？血が混じるか？"}
+{"item_name":"喀血","category":"Hx","subcategory":"ROS:胸部","hypothesis":"喀血 血痰 気道出血 大量喀血 肺結核 肺癌 肺塞栓","instruction":"血を吐いたか？痰に血が混じるか？量は？"}
+{"item_name":"呼吸困難","category":"Hx","subcategory":"ROS:胸部","hypothesis":"呼吸困難 息切れ 労作時 安静時 起座呼吸 発作性夜間呼吸困難","instruction":"息苦しさは？安静時にも？横になると悪化？"}
+{"item_name":"動悸","category":"Hx","subcategory":"ROS:心血管","hypothesis":"動悸 心臓がドキドキ 脈が速い 脈が飛ぶ 不整脈","instruction":"動悸は？脈が速い？飛ぶ？不規則？"}
+{"item_name":"失神","category":"Hx","subcategory":"ROS:心血管","hypothesis":"失神 意識消失 一過性 前失神 眼前暗黒感 起立時","instruction":"気を失ったことは？意識が遠のく感じは？"}
+{"item_name":"下肢浮腫","category":"Hx","subcategory":"ROS:心血管","hypothesis":"下肢浮腫 足のむくみ 圧痕性浮腫 夕方増悪 心不全 腎不全","instruction":"足がむくむか？片側？両側？夕方に悪化？"}
+{"item_name":"嘔気","category":"Hx","subcategory":"ROS:消化器","hypothesis":"嘔気 吐き気 むかつき 食事との関連","instruction":"吐き気は？食事と関連するか？"}
+{"item_name":"嘔吐","category":"Hx","subcategory":"ROS:消化器","hypothesis":"嘔吐 吐いた 内容物 回数 色 コーヒー残渣様","instruction":"吐いたか？何回？内容物は？色は？"}
+{"item_name":"下痢","category":"Hx","subcategory":"ROS:消化器","hypothesis":"下痢 水様便 頻回 泥状便 粘血便 脂肪便","instruction":"下痢は？水様？1日何回？血は混じるか？"}
+{"item_name":"便秘","category":"Hx","subcategory":"ROS:消化器","hypothesis":"便秘 排便困難 排便減少 腹部膨満 イレウス","instruction":"便秘は？何日出ていないか？ガスは出るか？"}
+{"item_name":"血便","category":"Hx","subcategory":"ROS:消化器","hypothesis":"血便 鮮血便 暗赤色便 下血 直腸出血 大腸","instruction":"便に血は混じるか？色は？鮮紅色？暗赤色？"}
+{"item_name":"黒色便","category":"Hx","subcategory":"ROS:消化器","hypothesis":"黒色便 タール便 メレナ 上部消化管出血 鉄剤","instruction":"黒い便は出たか？タール状か？鉄剤を飲んでいるか？"}
+{"item_name":"腹部膨満","category":"Hx","subcategory":"ROS:消化器","hypothesis":"腹部膨満 お腹が張る 腹水 ガス貯留 イレウス","instruction":"お腹が張る感じは？ガスは出るか？"}
+{"item_name":"食欲低下","category":"Hx","subcategory":"ROS:消化器","hypothesis":"食欲低下 食べられない 食思不振 早期満腹感","instruction":"食欲は落ちたか？食べる量は減ったか？"}
+{"item_name":"黄疸自覚","category":"Hx","subcategory":"ROS:消化器","hypothesis":"黄疸 目が黄色い 皮膚が黄色い 尿が濃い 便が白い","instruction":"目や皮膚が黄色くなったか？尿の色は？"}
+{"item_name":"頻尿","category":"Hx","subcategory":"ROS:泌尿器","hypothesis":"頻尿 排尿回数増加 夜間頻尿 尿路感染 前立腺","instruction":"トイレが近いか？夜中に何回？"}
+{"item_name":"排尿困難/排尿時痛","category":"Hx","subcategory":"ROS:泌尿器","hypothesis":"排尿困難 排尿時痛 尿が出にくい 残尿感 尿路感染","instruction":"排尿時に痛みは？出にくさは？"}
+{"item_name":"血尿","category":"Hx","subcategory":"ROS:泌尿器","hypothesis":"血尿 肉眼的血尿 尿が赤い 尿路結石 腎炎 膀胱癌","instruction":"尿に血は混じるか？色は？"}
+{"item_name":"尿量変化","category":"Hx","subcategory":"ROS:泌尿器","hypothesis":"尿量減少 乏尿 無尿 多尿 腎不全 糖尿病","instruction":"尿の量は変わったか？減った？増えた？"}
+{"item_name":"月経異常","category":"Hx","subcategory":"ROS:生殖器","hypothesis":"月経異常 不正出血 過多月経 無月経 月経困難","instruction":"月経は順調か？不正出血は？量の変化は？"}
+{"item_name":"関節痛","category":"Hx","subcategory":"ROS:筋骨格","hypothesis":"関節痛 関節の痛み 腫脹 可動域制限 朝のこわばり","instruction":"関節の痛みは？どの関節？腫れは？こわばりは？"}
+{"item_name":"筋力低下","category":"Hx","subcategory":"ROS:筋骨格","hypothesis":"筋力低下 力が入らない 近位筋 遠位筋 階段昇降困難","instruction":"力が入りにくいか？階段は？物を持ち上げられるか？"}
+{"item_name":"朝のこわばり","category":"Hx","subcategory":"ROS:筋骨格","hypothesis":"朝のこわばり 関節のこわばり 30分以上 1時間以上 RA 膠原病","instruction":"朝起きた時に関節がこわばるか？何分続く？"}
+{"item_name":"発疹","category":"Hx","subcategory":"ROS:皮膚","hypothesis":"発疹 皮疹 湿疹 蕁麻疹 紅斑 水疱 膿疱","instruction":"皮膚に何か出ているか？いつから？かゆみは？"}
+{"item_name":"掻痒","category":"Hx","subcategory":"ROS:皮膚","hypothesis":"掻痒 かゆみ 全身性 局所性 肝疾患 腎疾患 リンパ腫","instruction":"かゆみはあるか？全身？局所？夜間悪化？"}
+{"item_name":"紫斑","category":"Hx","subcategory":"ROS:皮膚","hypothesis":"紫斑 あざ 皮下出血 点状出血 血小板減少 DIC","instruction":"あざができやすいか？ぶつけていないのにあざは？"}
+{"item_name":"しびれ","category":"Hx","subcategory":"ROS:神経","hypothesis":"しびれ 四肢のしびれ 感覚異常 異常感覚 デルマトーム","instruction":"しびれはあるか？どこ？手足？左右差？"}
+{"item_name":"麻痺","category":"Hx","subcategory":"ROS:神経","hypothesis":"麻痺 運動麻痺 片麻痺 四肢麻痺 筋力低下","instruction":"手足が動きにくいか？どこ？いつから？"}
+{"item_name":"痙攣","category":"Hx","subcategory":"ROS:神経","hypothesis":"痙攣 けいれん 全身性 部分性 てんかん 意識消失","instruction":"けいれんはあったか？目撃者は？意識は？"}
+{"item_name":"意識変容","category":"Hx","subcategory":"ROS:神経","hypothesis":"意識変容 意識障害 傾眠 昏睡 せん妄 見当識障害","instruction":"意識がぼんやりするか？見当識は保たれているか？"}
+{"item_name":"言語障害","category":"Hx","subcategory":"ROS:神経","hypothesis":"言語障害 失語 構音障害 ろれつが回らない 理解困難","instruction":"言葉が出にくいか？呂律が回らないか？"}
+{"item_name":"不安","category":"Hx","subcategory":"ROS:精神","hypothesis":"不安 不安感 パニック 緊張 甲状腺機能亢進 褐色細胞腫","instruction":"不安感は？パニックのような症状は？"}
+{"item_name":"不眠","category":"Hx","subcategory":"ROS:精神","hypothesis":"不眠 入眠困難 中途覚醒 早朝覚醒 睡眠障害","instruction":"眠れないか？入眠？途中覚醒？早朝覚醒？"}
+{"item_name":"多飲多尿","category":"Hx","subcategory":"ROS:内分泌","hypothesis":"多飲多尿 口渇 水をたくさん飲む 糖尿病 尿崩症","instruction":"のどが渇いて水をたくさん飲むか？トイレが近いか？"}
+{"item_name":"耐暑性/耐寒性変化","category":"Hx","subcategory":"ROS:内分泌","hypothesis":"耐暑性低下 暑がり 耐寒性低下 寒がり 甲状腺機能異常","instruction":"暑さ寒さへの感じ方が変わったか？"}
+{"item_name":"異食症","category":"Hx","subcategory":"ROS:内分泌","hypothesis":"異食症 氷をかじる pagophagia 土を食べる 鉄欠乏性貧血","instruction":"氷を無性にかじりたくなるか？変わったものを食べたいか？"}
+{"item_name":"項部硬直","category":"PE","subcategory":"髄膜刺激","hypothesis":"項部硬直 頸部硬直 受動的頸部前屈で抵抗 髄膜炎 SAH","instruction":"仰臥位で受動的に頸部を前屈→抵抗・疼痛あれば陽性"}
+{"item_name":"Kernig徴候","category":"PE","subcategory":"髄膜刺激","hypothesis":"Kernig徴候 陽性 膝伸展制限 髄膜刺激 髄膜炎","instruction":"股関節・膝90°屈曲→膝伸展で抵抗・疼痛あれば陽性"}
+{"item_name":"Brudzinski徴候","category":"PE","subcategory":"髄膜刺激","hypothesis":"Brudzinski徴候 陽性 頸部前屈で下肢屈曲 髄膜刺激","instruction":"頸部前屈→両下肢が自動的に屈曲すれば陽性"}
+{"item_name":"Jolt accentuation","category":"PE","subcategory":"髄膜刺激","hypothesis":"Jolt accentuation 陽性 頭部左右振りで頭痛増悪 髄膜炎","instruction":"頭を左右に2-3回/秒振らせて頭痛増悪なら陽性"}
+{"item_name":"Murphy徴候","category":"PE","subcategory":"腹部徴候","hypothesis":"Murphy徴候 陽性 右季肋部圧痛 吸気時停止 急性胆嚢炎","instruction":"右季肋部を圧迫しながら深吸気→吸気停止なら陽性"}
+{"item_name":"McBurney圧痛","category":"PE","subcategory":"腹部徴候","hypothesis":"McBurney点圧痛 陽性 右下腹部 臍と右上前腸骨棘 虫垂炎","instruction":"臍と右ASISの間McBurney点を圧迫→圧痛あれば陽性"}
+{"item_name":"Blumberg徴候（反跳痛）","category":"PE","subcategory":"腹部徴候","hypothesis":"Blumberg徴候 陽性 反跳痛 腹膜刺激 腹膜炎","instruction":"腹壁をゆっくり圧迫し急に離す→離した時に痛みあれば陽性"}
+{"item_name":"Rovsing徴候","category":"PE","subcategory":"腹部徴候","hypothesis":"Rovsing徴候 陽性 左下腹部圧迫で右下腹部痛 虫垂炎","instruction":"左下腹部を圧迫→右下腹部に痛みが出れば陽性"}
+{"item_name":"腸腰筋徴候","category":"PE","subcategory":"腹部徴候","hypothesis":"腸腰筋徴候 Psoas sign 陽性 右股関節伸展で疼痛 後腹膜虫垂","instruction":"左側臥位→右股関節を過伸展させ疼痛あれば陽性"}
+{"item_name":"閉鎖孔徴候","category":"PE","subcategory":"腹部徴候","hypothesis":"閉鎖孔徴候 Obturator sign 陽性 右股関節内旋で疼痛 骨盤内虫垂","instruction":"仰臥位→右股関節屈曲90°で内旋→疼痛あれば陽性"}
+{"item_name":"Heel drop test","category":"PE","subcategory":"腹部徴候","hypothesis":"Heel drop test 踵落とし試験 陽性 腹膜刺激 虫垂炎","instruction":"つま先立ち→踵を床に落とす→腹痛あれば陽性"}
+{"item_name":"CVA叩打痛","category":"PE","subcategory":"腹部徴候","hypothesis":"CVA叩打痛 肋骨脊柱角 叩打痛 腎盂腎炎 腎結石 腎膿瘍","instruction":"肋骨脊柱角を拳で叩打→疼痛あれば陽性"}
+{"item_name":"頸静脈怒張(JVD)","category":"PE","subcategory":"心血管徴候","hypothesis":"頸静脈怒張 JVD 中心静脈圧上昇 心不全 心タンポナーデ PE","instruction":"45°仰臥位で頸静脈の怒張を観察。怒張あれば中心静脈圧上昇"}
+{"item_name":"Kussmaul徴候","category":"PE","subcategory":"心血管徴候","hypothesis":"Kussmaul徴候 吸気時頸静脈怒張増強 収縮性心膜炎 右室梗塞","instruction":"吸気時にJVDが増強すれば陽性"}
+{"item_name":"Levine徴候","category":"PE","subcategory":"心血管徴候","hypothesis":"Levine徴候 胸の前で拳を握る 狭心症 心筋梗塞","instruction":"患者が胸の前で拳を握る仕草→虚血性胸痛を示唆"}
+{"item_name":"S3 gallop","category":"PE","subcategory":"心血管徴候","hypothesis":"S3 gallop III音 奔馬調律 心不全 容量負荷 左室拡張","instruction":"心尖部でIII音を聴取→容量負荷・心不全を示唆"}
+{"item_name":"S4 gallop","category":"PE","subcategory":"心血管徴候","hypothesis":"S4 gallop IV音 心房収縮音 左室肥大 虚血 拡張障害","instruction":"心尖部でIV音を聴取→左室コンプライアンス低下を示唆"}
+{"item_name":"心雑音","category":"PE","subcategory":"心血管徴候","hypothesis":"心雑音 収縮期雑音 拡張期雑音 弁膜症 IE 新規出現","instruction":"心雑音の有無、最強点、放散、性状を評価"}
+{"item_name":"心膜摩擦音","category":"PE","subcategory":"心血管徴候","hypothesis":"心膜摩擦音 pericardial friction rub 心膜炎 座位前傾で増強","instruction":"座位前傾で胸骨左縁を聴診→擦れる音あれば心膜炎"}
+{"item_name":"Passive Leg Raising","category":"PE","subcategory":"心血管徴候","hypothesis":"Passive Leg Raising test 受動的下肢挙上 輸液反応性 前負荷評価","instruction":"45°→仰臥位で下肢45°挙上→SV 10%以上増加で反応性あり"}
+{"item_name":"甲状腺腫大","category":"PE","subcategory":"甲状腺/内分泌","hypothesis":"甲状腺腫大 びまん性 結節性 甲状腺触診 バセドウ病 橋本病","instruction":"甲状腺の大きさ・硬さ・結節・圧痛を触診で評価"}
+{"item_name":"甲状腺bruit","category":"PE","subcategory":"甲状腺/内分泌","hypothesis":"甲状腺bruit 血管雑音 バセドウ病 甲状腺機能亢進 血流増加","instruction":"甲状腺上で聴診→血管雑音あればバセドウ病を示唆"}
+{"item_name":"眼球突出","category":"PE","subcategory":"甲状腺/内分泌","hypothesis":"眼球突出 exophthalmos Hertel 甲状腺眼症 バセドウ病","instruction":"側方から観察。Hertel計で測定。眼球突出あれば甲状腺眼症"}
+{"item_name":"手指微細振戦","category":"PE","subcategory":"甲状腺/内分泌","hypothesis":"手指微細振戦 tremor 紙を載せて確認 甲状腺機能亢進 不安","instruction":"両手を前方伸展→紙を載せて振戦を観察"}
+{"item_name":"瞳孔不同","category":"PE","subcategory":"眼科的所見","hypothesis":"瞳孔不同 anisocoria 左右差 脳ヘルニア 動眼神経麻痺 Horner","instruction":"ペンライトで瞳孔径の左右差を評価"}
+{"item_name":"対光反射","category":"PE","subcategory":"眼科的所見","hypothesis":"対光反射 直接 間接 消失 遅延 RAPD 動眼神経 視神経","instruction":"直接・間接対光反射を評価。RAPD（swinging flashlight test）"}
+{"item_name":"結膜蒼白","category":"PE","subcategory":"眼科的所見","hypothesis":"結膜蒼白 眼瞼結膜 貧血所見 Hb低下","instruction":"下眼瞼を翻転し眼瞼結膜の色調を評価→蒼白なら貧血"}
+{"item_name":"眼球結膜黄染","category":"PE","subcategory":"眼科的所見","hypothesis":"眼球結膜黄染 黄疸 ビリルビン上昇 肝障害 溶血","instruction":"自然光下で眼球結膜の黄染を評価"}
+{"item_name":"乳頭浮腫","category":"PE","subcategory":"眼科的所見","hypothesis":"乳頭浮腫 眼底所見 頭蓋内圧亢進 うっ血乳頭 視神経乳頭腫脹","instruction":"眼底鏡で視神経乳頭の腫脹・境界不明瞭を評価"}
+{"item_name":"下腿腫脹左右差","category":"PE","subcategory":"DVT/血管","hypothesis":"下腿腫脹左右差 片側性浮腫 DVT 深部静脈血栓 下腿周径差","instruction":"下腿周径を左右で測定→2cm以上差あればDVT疑い"}
+{"item_name":"Homans徴候","category":"PE","subcategory":"DVT/血管","hypothesis":"Homans徴候 足関節背屈時腓腹筋痛 DVT 深部静脈血栓","instruction":"足関節を受動的に背屈→腓腹筋痛あれば陽性（感度低い）"}
+{"item_name":"CRT延長","category":"PE","subcategory":"DVT/血管","hypothesis":"CRT延長 毛細血管再充満時間 2秒以上 末梢循環不全 ショック 脱水","instruction":"爪床を5秒圧迫→解放後の色調回復が2秒以上で延長"}
+{"item_name":"末梢チアノーゼ","category":"PE","subcategory":"DVT/血管","hypothesis":"末梢チアノーゼ 四肢冷感 末梢循環不全 ショック 低心拍出","instruction":"指趾・口唇の青紫色変化と四肢冷感を評価"}
+{"item_name":"Mottling","category":"PE","subcategory":"DVT/血管","hypothesis":"Mottling 網状皮斑 大理石様皮膚 ショック 末梢循環不全 予後不良","instruction":"膝周囲から開始する網状皮斑を0-5のスコアで評価"}
+{"item_name":"Cullen徴候","category":"PE","subcategory":"出血徴候","hypothesis":"Cullen徴候 臍周囲皮下出血 後腹膜出血 重症膵炎 異所性妊娠破裂","instruction":"臍周囲の紫青色変色を視診→後腹膜出血を示唆"}
+{"item_name":"Grey-Turner徴候","category":"PE","subcategory":"出血徴候","hypothesis":"Grey-Turner徴候 側腹部皮下出血 後腹膜出血 重症膵炎","instruction":"側腹部の紫青色変色を視診→後腹膜出血を示唆"}
+{"item_name":"点状出血","category":"PE","subcategory":"出血徴候","hypothesis":"点状出血 petechiae 血小板減少 DIC 紫斑病 TTP","instruction":"圧迫で退色しない1-2mmの点状出血を探す"}
+{"item_name":"手掌蒼白","category":"PE","subcategory":"貧血徴候","hypothesis":"手掌蒼白 手掌皮膚線蒼白 重度貧血 Hb 7-8以下","instruction":"手掌の皮膚線の色調→蒼白なら重度貧血を示唆"}
+{"item_name":"匙状爪","category":"PE","subcategory":"貧血徴候","hypothesis":"匙状爪 koilonychia spoon nail 鉄欠乏性貧血 長期鉄欠乏","instruction":"爪の形状→スプーン状に凹んでいれば鉄欠乏を示唆"}
+{"item_name":"舌炎/口角炎","category":"PE","subcategory":"貧血徴候","hypothesis":"舌炎 Hunter舌炎 口角炎 舌乳頭萎縮 平滑舌 ビタミンB12欠乏 鉄欠乏","instruction":"舌の萎縮・発赤・口角のびらんを評価"}
+{"item_name":"蝶形紅斑","category":"PE","subcategory":"膠原病","hypothesis":"蝶形紅斑 malar rash 頬部紅斑 鼻唇溝を避ける SLE","instruction":"両頬の蝶形紅斑を視診→鼻唇溝を避ければSLE特異的"}
+{"item_name":"Raynaud現象","category":"PE","subcategory":"膠原病","hypothesis":"Raynaud現象 冷感曝露 白→紫→赤 三相性色調変化 膠原病 強皮症","instruction":"冷水浸漬で指の色調変化（白→紫→赤）を誘発"}
+{"item_name":"爪囲毛細血管異常","category":"PE","subcategory":"膠原病","hypothesis":"爪囲毛細血管異常 nailfold capillaroscopy 拡張 出血 膠原病 強皮症","instruction":"爪囲をダーモスコープで観察→毛細血管拡張・脱落"}
+{"item_name":"Gottron丘疹","category":"PE","subcategory":"膠原病","hypothesis":"Gottron丘疹 手指関節背面 紫紅色丘疹 皮膚筋炎","instruction":"手指MP/PIP関節背面の紫紅色丘疹→皮膚筋炎特異的"}
+{"item_name":"Crackles","category":"PE","subcategory":"肺聴診","hypothesis":"Crackles 捻髪音 水泡音 fine coarse 肺炎 心不全 間質性肺炎","instruction":"吸気時の断続性ラ音を聴取。fine（間質性）vscoarse（気道分泌物）"}
+{"item_name":"Wheeze","category":"PE","subcategory":"肺聴診","hypothesis":"Wheeze 喘鳴 呼気性 吸気性 喘息 COPD 気道狭窄","instruction":"呼気時の連続性ラ音を聴取→気道狭窄を示唆"}
+{"item_name":"呼吸音減弱/消失","category":"PE","subcategory":"肺聴診","hypothesis":"呼吸音減弱 呼吸音消失 気胸 胸水 無気肺 肺実質病変","instruction":"左右対称に聴診し呼吸音の減弱・消失を評価"}
+{"item_name":"胸膜摩擦音","category":"PE","subcategory":"肺聴診","hypothesis":"胸膜摩擦音 pleural friction rub 胸膜炎 PE 吸気呼気両方","instruction":"吸気・呼気の両方で擦れる音→胸膜炎"}
+{"item_name":"Stridor","category":"PE","subcategory":"肺聴診","hypothesis":"Stridor 吸気性喘鳴 上気道狭窄 喉頭浮腫 異物 腫瘍","instruction":"吸気時の高調音→上気道狭窄（緊急）"}
+{"item_name":"心窩部圧痛","category":"PE","subcategory":"腹部診察","hypothesis":"心窩部圧痛 上腹部圧痛 胃十二指腸 膵臓 急性膵炎","instruction":"心窩部を圧迫→圧痛の有無と程度を評価"}
+{"item_name":"右上腹部圧痛","category":"PE","subcategory":"腹部診察","hypothesis":"右上腹部圧痛 右季肋部圧痛 胆嚢 肝臓 胆管炎","instruction":"右上腹部を圧迫→圧痛あれば肝胆道系疾患"}
+{"item_name":"筋性防御","category":"PE","subcategory":"腹部診察","hypothesis":"筋性防御 guarding 腹壁緊張 板状硬 腹膜炎 消化管穿孔","instruction":"腹壁の不随意筋緊張を触診→板状硬なら汎発性腹膜炎"}
+{"item_name":"腸蠕動音","category":"PE","subcategory":"腹部診察","hypothesis":"腸蠕動音 亢進 金属音 減弱 消失 イレウス 腸管麻痺","instruction":"1分以上聴診→亢進（機械的イレウス）・消失（麻痺性）"}
+{"item_name":"肝腫大","category":"PE","subcategory":"腹部診察","hypothesis":"肝腫大 肝臓触知 肝下縁 肝疾患 心不全 うっ血肝","instruction":"右肋骨弓下で肝下縁を触知→2横指以上で肝腫大"}
+{"item_name":"脾腫","category":"PE","subcategory":"腹部診察","hypothesis":"脾腫 脾臓触知 感染症 血液疾患 門脈圧亢進 IE","instruction":"左側臥位で脾臓を触知→触知可能なら脾腫"}
+{"item_name":"腹水","category":"PE","subcategory":"腹部診察","hypothesis":"腹水 波動 shifting dullness 腹部膨満 肝硬変 心不全","instruction":"波動・shifting dullnessで腹水の有無を評価"}
+{"item_name":"腹部拍動性腫瘤","category":"PE","subcategory":"腹部診察","hypothesis":"腹部拍動性腫瘤 腹部大動脈瘤 AAA 拡張性拍動","instruction":"臍上で拍動性腫瘤を触知→AAA疑い"}
+{"item_name":"意識レベル(GCS/JCS)","category":"PE","subcategory":"神経診察","hypothesis":"意識レベル GCS JCS 意識障害 傾眠 昏睡 せん妄","instruction":"GCS(E+V+M)またはJCSで意識レベルを定量評価"}
+{"item_name":"Babinski徴候","category":"PE","subcategory":"神経診察","hypothesis":"Babinski徴候 陽性 足底反射 母趾背屈 錐体路障害 UMN","instruction":"足底外側をこする→母趾背屈+他趾扇状開排で陽性"}
+{"item_name":"深部腱反射","category":"PE","subcategory":"神経診察","hypothesis":"深部腱反射 亢進 減弱 消失 錐体路障害 末梢神経障害","instruction":"膝蓋腱・アキレス腱・上腕二頭筋反射を左右比較"}
+{"item_name":"小脳症状","category":"PE","subcategory":"神経診察","hypothesis":"小脳症状 測定障害 企図振戦 指鼻試験 踵膝試験 歩行失調 構音障害","instruction":"指鼻試験・踵膝試験・歩行で小脳機能を評価"}
+{"item_name":"片麻痺","category":"PE","subcategory":"神経診察","hypothesis":"片麻痺 一側性運動障害 上肢下肢 Barré徴候 脳卒中","instruction":"Barré試験(上肢・下肢)で片側の筋力低下を評価"}
+{"item_name":"感覚障害","category":"PE","subcategory":"神経診察","hypothesis":"感覚障害 触覚低下 痛覚低下 振動覚低下 デルマトーム 手袋靴下型","instruction":"触覚・痛覚・振動覚・位置覚を左右・遠近で比較"}
+{"item_name":"脳神経評価","category":"PE","subcategory":"神経診察","hypothesis":"脳神経 顔面麻痺 舌偏位 嚥下障害 複視 眼球運動障害","instruction":"CN II-XII を系統的に評価（視力,眼球運動,顔面,舌,嚥下）"}
+{"item_name":"失語","category":"PE","subcategory":"神経診察","hypothesis":"失語 運動性失語 感覚性失語 Broca Wernicke 呼称障害","instruction":"発語の流暢性・理解・復唱・呼称で失語型を評価"}
+{"item_name":"蕁麻疹","category":"PE","subcategory":"皮膚所見","hypothesis":"蕁麻疹 膨疹 アレルギー アナフィラキシー 薬疹","instruction":"膨隆性の発疹→アレルギー・アナフィラキシーを疑う"}
+{"item_name":"壊疽","category":"PE","subcategory":"皮膚所見","hypothesis":"壊疽 組織壊死 黒色変化 血行障害 糖尿病足 壊死性筋膜炎","instruction":"組織壊死・黒色変化→血行障害か感染性壊疽を評価"}
+{"item_name":"Janeway病変","category":"PE","subcategory":"皮膚所見","hypothesis":"Janeway病変 手掌足底 無痛性紅斑 感染性心内膜炎 IE 塞栓","instruction":"手掌・足底の無痛性紅斑→IE塞栓現象を示唆"}
+{"item_name":"Osler結節","category":"PE","subcategory":"皮膚所見","hypothesis":"Osler結節 指趾 有痛性結節 感染性心内膜炎 IE 免疫複合体","instruction":"指趾の有痛性結節→IE免疫複合体沈着を示唆"}
+{"item_name":"帯状疱疹","category":"PE","subcategory":"皮膚所見","hypothesis":"帯状疱疹 水疱 デルマトーム分布 VZV 片側性 神経痛","instruction":"片側デルマトーム分布の水疱→帯状疱疹"}
+{"item_name":"結節性紅斑","category":"PE","subcategory":"皮膚所見","hypothesis":"結節性紅斑 下腿前面 有痛性紅色結節 サルコイドーシス IBD ベーチェット","instruction":"下腿前面の有痛性紅色結節→全身性疾患の皮膚症状"}
+{"item_name":"頸部リンパ節腫大","category":"PE","subcategory":"リンパ節","hypothesis":"頸部リンパ節腫大 前頸部 後頸部 感染 悪性リンパ腫 転移","instruction":"頸部リンパ節を触診→大きさ・硬さ・可動性・圧痛を評価"}
+{"item_name":"腋窩リンパ節腫大","category":"PE","subcategory":"リンパ節","hypothesis":"腋窩リンパ節腫大 乳癌 悪性リンパ腫 感染","instruction":"腋窩を触診→リンパ節腫大の有無を評価"}
+{"item_name":"全身性リンパ節腫大","category":"PE","subcategory":"リンパ節","hypothesis":"全身性リンパ節腫大 複数領域 悪性リンパ腫 HIV サルコイドーシス 結核","instruction":"頸部・腋窩・鼠径など複数領域のリンパ節を系統的に触診"}
+{"item_name":"下肢浮腫（圧痕性）","category":"PE","subcategory":"四肢","hypothesis":"下肢浮腫 圧痕性 pitting edema 心不全 腎不全 肝硬変","instruction":"脛骨前面を10秒圧迫→圧痕が残ればpitting edema"}
+{"item_name":"ばち指","category":"PE","subcategory":"四肢","hypothesis":"ばち指 clubbing 指趾先端腫大 肺疾患 心疾患 IBD 肝硬変","instruction":"爪の基部角(Lovibond角)>180°→ばち指"}
+{"item_name":"関節変形","category":"PE","subcategory":"四肢","hypothesis":"関節変形 スワンネック ボタン穴 尺側偏位 RA Jaccoud","instruction":"手指関節の変形パターンを視診→RA/SLEの鑑別"}
+{"item_name":"脱水所見","category":"PE","subcategory":"全身","hypothesis":"脱水所見 口腔粘膜乾燥 皮膚ツルゴール低下 腋窩乾燥 眼窩陥凹","instruction":"口腔粘膜・皮膚ツルゴール・腋窩・CRTで脱水を評価"}
+{"item_name":"ショック所見","category":"PE","subcategory":"全身","hypothesis":"ショック所見 冷汗 蒼白 頻脈 血圧低下 意識障害 末梢冷感","instruction":"蒼白・冷汗・末梢冷感・CRT延長・頻脈→ショック"}
+{"item_name":"栄養状態","category":"PE","subcategory":"全身","hypothesis":"栄養状態 るい痩 BMI低下 筋肉量減少 悪液質 肥満","instruction":"BMI・筋肉量・皮下脂肪で栄養状態を評価"}
+{"item_name":"SLR test","category":"PE","subcategory":"整形外科的","hypothesis":"SLR test 下肢伸展挙上テスト 陽性 腰椎椎間板ヘルニア 坐骨神経痛","instruction":"仰臥位→膝伸展で下肢挙上→70°以下で放散痛あれば陽性"}
+{"item_name":"Lachman test","category":"PE","subcategory":"整形外科的","hypothesis":"Lachman test 陽性 前十字靭帯損傷 ACL 前方不安定性","instruction":"膝20-30°屈曲→脛骨を前方牽引→制動なければ陽性"}
+{"item_name":"McMurray test","category":"PE","subcategory":"整形外科的","hypothesis":"McMurray test 陽性 半月板損傷 膝関節 クリック音","instruction":"膝を最大屈曲→内外旋しながら伸展→クリック・疼痛で陽性"}
+{"item_name":"Phalen test","category":"PE","subcategory":"整形外科的","hypothesis":"Phalen test 陽性 手根管症候群 正中神経 しびれ","instruction":"手関節最大掌屈60秒→正中神経領域のしびれで陽性"}
+{"item_name":"Tinel徴候","category":"PE","subcategory":"整形外科的","hypothesis":"Tinel徴候 陽性 叩打で放散痛 神経障害 手根管症候群","instruction":"神経走行部を叩打→末梢への放散痛あれば陽性"}
+{"item_name":"Neer test","category":"PE","subcategory":"整形外科的","hypothesis":"Neer test 陽性 肩インピンジメント症候群 腱板障害","instruction":"肩甲骨固定→上肢前方挙上で疼痛あれば陽性"}
+{"item_name":"Patrick(FABER)テスト","category":"PE","subcategory":"整形外科的","hypothesis":"Patrick FABER テスト 陽性 仙腸関節障害 股関節病変","instruction":"仰臥位→股関節屈曲外転外旋→疼痛あれば陽性"}
+{"item_name":"Trousseau徴候","category":"PE","subcategory":"特殊徴候","hypothesis":"Trousseau徴候 血圧計加圧で手の攣縮 低カルシウム血症 テタニー","instruction":"血圧計カフで収縮期圧以上に3分加圧→助産師手位で陽性"}
+{"item_name":"Chvostek徴候","category":"PE","subcategory":"特殊徴候","hypothesis":"Chvostek徴候 顔面神経叩打で顔面筋攣縮 低カルシウム血症","instruction":"耳前部の顔面神経を叩打→同側口角攣縮で陽性"}
+{"item_name":"起立試験","category":"PE","subcategory":"特殊徴候","hypothesis":"起立試験 起立時血圧低下 頻脈 起立性低血圧 脱水 自律神経障害","instruction":"臥位→立位で血圧・脈拍測定→sBP 20以上低下で陽性"}
+{"item_name":"Romberg試験","category":"PE","subcategory":"特殊徴候","hypothesis":"Romberg試験 陽性 閉眼で動揺 後索障害 深部感覚障害","instruction":"閉脚立位→閉眼で動揺増大すれば陽性"}
+{"item_name":"Dix-Hallpike test","category":"PE","subcategory":"特殊徴候","hypothesis":"Dix-Hallpike test 陽性 BPPV 良性発作性頭位めまい症 眼振","instruction":"座位→頭部45°回旋で急速仰臥→回旋性眼振で陽性"}
+{"item_name":"Head impulse test","category":"PE","subcategory":"特殊徴候","hypothesis":"Head impulse test HIT 陽性 前庭機能障害 末梢性めまい BPPV","instruction":"正面注視→急速に頭部回旋→catch-up saccadeあれば陽性"}
+{"item_name":"歩行評価","category":"PE","subcategory":"特殊徴候","hypothesis":"歩行評価 歩行障害 失調性 痙性 小刻み 動揺性 パーキンソン","instruction":"通常歩行・継ぎ足歩行で歩容の異常パターンを評価"}
+{"item_name":"眼振","category":"PE","subcategory":"特殊徴候","hypothesis":"眼振 nystagmus 方向 水平 垂直 回旋 末梢性 中枢性","instruction":"注視方向で眼振の有無・方向・性状を評価→末梢vs中枢"}
+{"item_name":"体温測定","category":"PE","subcategory":"バイタルサイン","hypothesis":"体温 発熱 低体温 間欠熱 弛張熱 稽留熱 解熱薬反応","instruction":"腋窩/鼓膜で測定。発熱パターン（間欠/弛張/稽留）を評価"}
+{"item_name":"血圧測定","category":"PE","subcategory":"バイタルサイン","hypothesis":"血圧 高血圧 低血圧 収縮期 拡張期 脈圧 左右差 ショック","instruction":"両上肢で測定。左右差・脈圧・起立時変化を評価"}
+{"item_name":"心拍数・脈拍測定","category":"PE","subcategory":"バイタルサイン","hypothesis":"心拍数 脈拍 頻脈 徐脈 不整脈 脈拍欠損 脈の性状","instruction":"橈骨動脈で1分間測定。整/不整・強弱・欠損を評価"}
+{"item_name":"呼吸数測定","category":"PE","subcategory":"バイタルサイン","hypothesis":"呼吸数 頻呼吸 徐呼吸 呼吸パターン Kussmaul呼吸 Cheyne-Stokes","instruction":"患者に気づかれないよう1分間測定。パターン（Kussmaul/CS）を評価"}
+{"item_name":"SpO2測定","category":"PE","subcategory":"バイタルサイン","hypothesis":"SpO2 酸素飽和度 低酸素血症 呼吸不全 パルスオキシメトリー","instruction":"指先で測定。90%以下は呼吸不全。CO中毒では偽正常に注意"}
+{"item_name":"腱黄色腫","category":"PE","subcategory":"特殊徴候","hypothesis":"腱黄色腫 アキレス腱肥厚 家族性高コレステロール血症 FH","instruction":"アキレス腱の肥厚→FHを示唆"}

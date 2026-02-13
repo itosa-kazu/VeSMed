@@ -34,7 +34,7 @@ def analyze_patient(symptoms_text, results_text, mode):
     if not symptoms_text.strip():
         return (
             "症状を入力してください。",
-            None, None, None, None,
+            None, None, None, None, None, None,
         )
 
     eng = init_engine()
@@ -59,26 +59,29 @@ def analyze_patient(symptoms_text, results_text, mode):
     import copy
     cands_copy = copy.deepcopy(candidates)
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        # update_from_results と compute_novelty は独立（並行可能）
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        # update_from_results, compute_novelty, compute_novelty_hpe は全て独立（並行可能）
         fut_update = executor.submit(
             eng.update_from_results, cands_copy, result_lines,
             symptoms_text, engine_mode,
         ) if result_lines else None
         fut_novelty = executor.submit(eng.compute_novelty, full_text)
+        fut_novelty_hpe = executor.submit(eng.compute_novelty_hpe, full_text)
 
         novelty = fut_novelty.result()
+        novelty_hpe = fut_novelty_hpe.result()
         candidates = fut_update.result() if fut_update else candidates
 
     t2 = _time.time()
-    print(f"[TIMING] update+novelty parallel ({engine_mode}): {t2-t1:.1f}s")
+    print(f"[TIMING] update+novelty+novelty_hpe parallel ({engine_mode}): {t2-t1:.1f}s")
 
-    # Step 4: 検査ランキング（CPU演算のみ、高速）
+    # Step 4: 検査ランキング + Part D（CPU演算のみ、高速）
     ranked_tests = eng.rank_tests(candidates, novelty=novelty)
     critical_tests = eng.rank_tests_critical(candidates, novelty=novelty)
     confirm_tests = eng.rank_tests_confirm(candidates, novelty=novelty)
+    ranked_hpe = eng.rank_hpe(candidates, novelty_hpe=novelty_hpe)
     t3 = _time.time()
-    print(f"[TIMING] rank_tests+critical+confirm: {t3-t2:.1f}s")
+    print(f"[TIMING] rank_tests+critical+confirm+hpe: {t3-t2:.1f}s")
     print(f"[TIMING] === TOTAL ({engine_mode}): {t3-t0:.1f}s ===")
 
     n_results = len(result_lines)
@@ -91,6 +94,8 @@ def analyze_patient(symptoms_text, results_text, mode):
         format_tests_df(ranked_tests),
         format_critical_df(critical_tests),
         format_confirm_df(confirm_tests),
+        format_hpe_df(ranked_hpe, "Hx"),
+        format_hpe_df(ranked_hpe, "PE"),
     )
 
 
@@ -98,7 +103,7 @@ def reset_session():
     return (
         "", "",
         "リセットしました。",
-        None, None, None, None,
+        None, None, None, None, None, None,
     )
 
 
@@ -170,6 +175,27 @@ def format_confirm_df(confirm_tests):
     return pd.DataFrame(rows)
 
 
+def format_hpe_df(ranked_hpe, category_filter):
+    """Part D: 問診(Hx)または身体診察(PE)のランキングをDataFrame化"""
+    filtered = [r for r in ranked_hpe if r["category"] == category_filter]
+    rows = []
+    for i, r in enumerate(filtered[:TOP_K_TESTS]):
+        related = ", ".join(d["disease_name"] for d in r.get("details", [])[:3])
+        if len(r.get("details", [])) > 3:
+            related += f" 他{len(r['details']) - 3}件"
+        rows.append({
+            "#": i + 1,
+            "項目": r["item_name"],
+            "分類": r["subcategory"],
+            "効用": f"{r['utility']:.4f}",
+            "分散": f"{r['score']:.4f}",
+            "新規": f"{r.get('novelty', 1.0):.2f}",
+            "手順": r.get("instruction", ""),
+            "関連疾患": related,
+        })
+    return pd.DataFrame(rows)
+
+
 # ----------------------------------------------------------------
 # Gradio UI
 # ----------------------------------------------------------------
@@ -236,9 +262,27 @@ with gr.Blocks(
             interactive=False,
         )
 
+    gr.Markdown("---")
+    gr.Markdown("### Part D: 問診・身体診察推奨")
+
+    with gr.Row():
+        with gr.Column(scale=1):
+            hpe_hx_table = gr.Dataframe(
+                label="Part D-1: 問診推奨（分散ベース）",
+                headers=["#", "項目", "分類", "効用", "分散", "新規", "手順", "関連疾患"],
+                interactive=False,
+            )
+        with gr.Column(scale=1):
+            hpe_pe_table = gr.Dataframe(
+                label="Part D-2: 身体診察推奨（分散ベース）",
+                headers=["#", "項目", "分類", "効用", "分散", "新規", "手順", "関連疾患"],
+                interactive=False,
+            )
+
     # ===== イベント =====
 
-    outputs = [status_text, disease_table, test_table, critical_table, confirm_table]
+    outputs = [status_text, disease_table, test_table, critical_table, confirm_table,
+               hpe_hx_table, hpe_pe_table]
 
     analyze_btn.click(
         fn=analyze_patient,
@@ -256,6 +300,12 @@ with gr.Blocks(
         outputs=[symptoms_input, results_input] + outputs,
     )
 
+    # Part D用: HPEエンジン情報表示
+    if engine and engine.hpe_items:
+        n_hx = sum(1 for it in engine.hpe_items if it['category'] == 'Hx')
+        n_pe = sum(1 for it in engine.hpe_items if it['category'] == 'PE')
+        print(f"[Web] Part D: 問診{n_hx}項目 + 身体診察{n_pe}項目 = {n_hx+n_pe}項目")
+
 
 if __name__ == "__main__":
     print("エンジン初期化中...")
@@ -263,4 +313,4 @@ if __name__ == "__main__":
     print(f"疾患DB: {len(engine.disease_db)}件 / ベクトルDB: {engine.collection.count()}件")
     print(f"名寄せマップ: {len(engine.test_name_map)}件")
     print("Web UI起動中...")
-    app.launch(inbrowser=True)
+    app.launch(inbrowser=True, share=True)
