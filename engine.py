@@ -990,8 +990,12 @@ class VeSMedEngine:
     # ----------------------------------------------------------------
     # LLM呼び出し（リトライ + フォールバック）
     # ----------------------------------------------------------------
-    def _llm_call(self, messages, temperature=0.1, max_tokens=65536):
-        """Vertex AI → lemonapi → 12ai の3段フォールバック"""
+    def _llm_call(self, messages, temperature=0.1, max_tokens=65536,
+                  thinking_budget=0):
+        """Vertex AI → lemonapi → 12ai の3段フォールバック
+
+        thinking_budget: 思考トークン上限（0=思考無効、抽出/注釈タスク向け）
+        """
         from google.genai import types as genai_types
 
         # OpenAI messages → Vertex contents変換
@@ -1017,6 +1021,9 @@ class VeSMedEngine:
                 system_instruction=system_text if system_text else None,
                 temperature=temperature,
                 max_output_tokens=max_tokens,
+                thinking_config=genai_types.ThinkingConfig(
+                    thinking_budget=thinking_budget,
+                ),
             )
             resp = self.vertex_client.models.generate_content(
                 model=VERTEX_MODEL,
