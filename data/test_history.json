@@ -1,0 +1,38 @@
+[
+  {
+    "date": "2025-02-10",
+    "method": "V1 sim_matrix (test findings_description V1)",
+    "description": "Original sim_matrix with V1 test findings (~2K chars avg). Column-mean centering in update_from_results.",
+    "ok": 98,
+    "ng": 50,
+    "neutral": 32,
+    "score": 48,
+    "accuracy": 66.2,
+    "total_cases": 51,
+    "total_checks": 180
+  },
+  {
+    "date": "2025-02-11",
+    "method": "V3 sim_matrix (test findings_description V3)",
+    "description": "sim_matrix with V3 test findings (~11K chars avg, 6-section). Embedding convergence caused accuracy drop.",
+    "ok": 91,
+    "ng": 57,
+    "neutral": 32,
+    "score": 34,
+    "accuracy": 61.5,
+    "total_cases": 51,
+    "total_checks": 180
+  },
+  {
+    "date": "2026-02-11",
+    "method": "Direct method (sim_matrix不使用)",
+    "description": "異常: result_emb × disease_embs直接比較。正常: 双方向反実仮想(定量) / 単方向反実仮想(定性)。sim_matrixをバイパス。",
+    "ok": 97,
+    "ng": 48,
+    "neutral": 35,
+    "score": 49,
+    "accuracy": 66.9,
+    "total_cases": 51,
+    "total_checks": 180
+  }
+]

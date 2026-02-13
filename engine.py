@@ -89,6 +89,7 @@ class VeSMedEngine:
 
         # 類似度行列（疾患×検査）をembeddingで計算
         self.sim_matrix = None    # (N_diseases, N_tests) ndarray
+        self.disease_embs_normed = None  # (N_diseases, dim) 正規化済み疾患embedding（直接法用）
         self.disease_idx = {}     # disease_name → row index
         self.test_idx = {}        # test_name → col index
         self.test_names = []      # col順の検査名リスト
@@ -102,11 +103,7 @@ class VeSMedEngine:
         self.risk_embs = {}  # test_name → np.array (4096,)
         self._compute_risk_embeddings()
 
-        # 検査findings embedding（novelty計算用）: 正規化済み (N_tests, dim)
-        self.test_findings_embs = None
-        self._load_test_findings_embs()
-
-        # 検査名embedding（novelty二重チャネル用）: 正規化済み (N_tests, dim)
+        # 検査名embedding（novelty + 検査マッチ用）: 正規化済み (N_tests, dim)
         self.test_name_embs = None
         self._compute_test_name_embs()
 
@@ -200,9 +197,11 @@ class VeSMedEngine:
     # ----------------------------------------------------------------
     def _compute_similarity_matrix(self):
         """
-        疾患findings_description × 検査findings_description のcos類似度行列を計算。
-        疾患embeddingはChromaDBから、検査embeddingはAPI+キャッシュから取得。
-        結果: self.sim_matrix (N_diseases, N_tests), self.disease_idx, self.test_idx
+        仮説embedding方式: sim_matrix[d][j] = cos(E("検査名_j 異常"), disease_emb_d)
+
+        検査findingsの記述は不要。疾患記述に既に検査情報が含まれているため、
+        「検査名 異常」という最小仮説のembeddingだけで疾患との関連性を捕捉できる。
+        update_from_results（直接法）と同じ演算・同じ空間。仮想か現実かの違いだけ。
         """
         cache_file = os.path.join(DATA_DIR, "sim_matrix.npz")
 
@@ -229,47 +228,47 @@ class VeSMedEngine:
         self.disease_idx = {name: i for i, name in enumerate(disease_names)}
         disease_embs = np.array(disease_embs_list, dtype=np.float32)
 
+        # 疾患embeddingを正規化して保持（直接法で常に使用）
+        d_norms = np.linalg.norm(disease_embs, axis=1, keepdims=True)
+        d_norms[d_norms == 0] = 1.0
+        self.disease_embs_normed = disease_embs / d_norms
+        print(f"[疾患Emb] {self.disease_embs_normed.shape[0]}疾患の正規化embedding保持")
+
         # キャッシュチェック
         if os.path.exists(cache_file):
             data = np.load(cache_file, allow_pickle=True)
             cached_diseases = list(data["disease_names"])
             cached_tests = list(data["test_names"])
-            if cached_diseases == disease_names and cached_tests == self.test_names:
+            # 仮説方式のキャッシュかどうかも確認
+            is_hypothesis = bool(data.get("hypothesis_mode", False))
+            if cached_diseases == disease_names and cached_tests == self.test_names and is_hypothesis:
                 self.sim_matrix = data["sim_matrix"]
-                # test_findings_embsもキャッシュから読み込み（存在すれば）
-                if "test_findings_embs" in data:
-                    self._cached_test_findings_embs = data["test_findings_embs"]
-                print(f"[類似度行列] キャッシュから読込 {self.sim_matrix.shape}")
+                print(f"[sim_matrix] 仮説方式キャッシュから読込 {self.sim_matrix.shape}")
                 return
 
-        # 検査embeddingを取得（バッチ、並行）
-        test_texts = [self.test_db[t]["findings_description"] for t in self.test_names]
-        test_embs = self._batch_embed(test_texts)
-        if test_embs is None:
-            print("[類似度行列] 検査embedding失敗")
+        # 仮説embedding: "検査名 異常" × N_tests
+        hypothesis_texts = [f"{tname} 異常" for tname in self.test_names]
+        hypothesis_embs = self._batch_embed(hypothesis_texts)
+        if hypothesis_embs is None:
+            print("[sim_matrix] 仮説embedding失敗")
             return
 
-        # 正規化してcos類似度 = 内積
-        d_norms = np.linalg.norm(disease_embs, axis=1, keepdims=True)
-        d_norms[d_norms == 0] = 1.0
-        disease_embs_normed = disease_embs / d_norms
+        # 正規化
+        h_norms = np.linalg.norm(hypothesis_embs, axis=1, keepdims=True)
+        h_norms[h_norms == 0] = 1.0
+        hypothesis_embs_normed = hypothesis_embs / h_norms
 
-        t_norms = np.linalg.norm(test_embs, axis=1, keepdims=True)
-        t_norms[t_norms == 0] = 1.0
-        test_embs_normed = test_embs / t_norms
+        self.sim_matrix = self.disease_embs_normed @ hypothesis_embs_normed.T
 
-        self.sim_matrix = disease_embs_normed @ test_embs_normed.T
-        self._cached_test_findings_embs = test_embs_normed  # novelty計算用に保持
-
-        # キャッシュ保存（test_findings_embsも含む）
+        # キャッシュ保存
         np.savez(
             cache_file,
             sim_matrix=self.sim_matrix,
-            test_findings_embs=test_embs_normed,
             disease_names=np.array(disease_names, dtype=object),
             test_names=np.array(self.test_names, dtype=object),
+            hypothesis_mode=np.array(True),
         )
-        print(f"[類似度行列] {self.sim_matrix.shape} 計算・キャッシュ完了")
+        print(f"[sim_matrix] 仮説方式 {self.sim_matrix.shape} 計算・キャッシュ完了")
 
     def _batch_embed(self, texts, batch_size=50, max_workers=40):
         """テキストリストをバッチ並行でembedding。ndarray (N, dim) を返す。"""
@@ -509,28 +508,13 @@ class VeSMedEngine:
         print(f"[Risk] {len(self.risk_embs)}検査のリスクembedding計算・キャッシュ完了")
 
     # ----------------------------------------------------------------
-    # 検査findings embedding読込（novelty計算用）
-    # ----------------------------------------------------------------
-    def _load_test_findings_embs(self):
-        """
-        sim_matrix構築時に計算されたtest findings embeddingを
-        novelty計算用に (N_tests, dim) ndarray として保持する。
-        """
-        if hasattr(self, '_cached_test_findings_embs') and self._cached_test_findings_embs is not None:
-            self.test_findings_embs = self._cached_test_findings_embs
-            print(f"[TestFindingsEmb] {self.test_findings_embs.shape[0]}件読込")
-        else:
-            print("[TestFindingsEmb] なし（sim_matrixキャッシュ更新が必要）")
-
-    # ----------------------------------------------------------------
-    # 検査名embedding計算（novelty二重チャネル用）
+    # 検査名embedding計算（novelty + 検査マッチ用）
     # ----------------------------------------------------------------
     def _compute_test_name_embs(self):
         """
-        検査名そのものをembedし、novelty計算の第2チャネルとして使う。
-        findings_descriptionは臨床記述が支配的で「直接ビリルビン正常値」のような
-        短い入力とのcos類似度が低い（~0.58）。検査名embeddingなら~0.80。
-        二重チャネル: max(sim_findings, sim_name) でnoveltyを計算。
+        検査名をembedし、novelty計算と検査名マッチに使用。
+        novelty = 1 - max_line cos(line_emb, test_name_emb_j)
+        患者テキストに検査名が直接言及されていれば新規性が下がる。
         """
         cache_file = os.path.join(DATA_DIR, "test_name_embs.npz")
 
@@ -800,25 +784,51 @@ class VeSMedEngine:
         return self._annotate_with_ranges(result_lines)
 
     # ----------------------------------------------------------------
-    # Option 3: 検査結果による疾患重み更新
+    # ヘルパー: 検査名マッチ / エイリアス解決
+    # ----------------------------------------------------------------
+    def _match_test_name(self, emb):
+        """embeddingから最も近い検査名とcos類似度を返す"""
+        if self.test_name_embs is not None:
+            sims = emb @ self.test_name_embs.T
+            best_j = int(np.argmax(sims))
+            return self.test_names[best_j], float(sims[best_j])
+        return "?", 0.0
+
+    def _resolve_test_alias(self, test_name):
+        """検査名を基準範囲テーブルの正規名に解決。見つからなければNone"""
+        lower = test_name.lower()
+        if lower in self.range_alias:
+            return self.range_alias[lower]
+        best_len = 0
+        best_name = None
+        for alias, canonical in self.range_alias.items():
+            if len(alias) >= 3 and alias in lower and len(alias) > best_len:
+                best_name = canonical
+                best_len = len(alias)
+        return best_name
+
+    # ----------------------------------------------------------------
+    # Option 3: 検査結果による疾患重み更新（直接法）
     # ----------------------------------------------------------------
     def update_from_results(self, candidates: list, result_lines: list,
                             symptoms: str = "", mode: str = "fast") -> list:
         """
-        Option 3: 検査結果から疾患重みを更新。
+        Option 3: 検査結果から疾患重みを更新（直接法）。
+
+        sim_matrixを使わず、結果テキストのembeddingを疾患embeddingと直接比較。
+
+        異常結果: result_emb × disease_embs → excess → exp(+excess) で増幅
+        正常結果（定量）: 双方向反実仮想 "検査名 異常 上昇/低下" →
+                          exp(-(excess_up + excess_down)) で抑制
+        正常結果（定性）: 単方向反実仮想 "検査名 異常" → exp(-excess) で抑制
 
         mode:
           "fast"  — 基準範囲テーブルでアノテーション（確定的、1-2秒）
           "llm"   — LLMで文脈付きアノテーション（3-5秒、文脈依存）
-
-        初回の症状検索（search_diseases）は固定し、検査結果は
-        sim_matrix × sign(polarity) で重みを乗算更新する。
-
-        返り値: 更新済みcandidatesリスト（similarity更新済み、降順ソート）
         """
-        if not result_lines or self.polarity_axis is None or self.test_name_embs is None:
+        if not result_lines or self.polarity_axis is None:
             return candidates
-        if self.sim_matrix is None:
+        if self.disease_embs_normed is None:
             return candidates
 
         # アノテーション（モード別）
@@ -842,43 +852,113 @@ class VeSMedEngine:
         l_norms[l_norms == 0] = 1.0
         line_embs = line_embs / l_norms
 
-        # sim_matrix列平均（テスト別の背景関連度）
-        col_means = self.sim_matrix.mean(axis=0)  # (N_tests,)
+        # 各行の極性を一括計算
+        polarities = line_embs @ self.polarity_axis  # (N_lines,)
 
-        # 各結果行を処理
+        # --- 正常結果の反実仮想テキストを構築 ---
+        cf_texts = []       # 反実仮想テキスト（一括embed用）
+        cf_meta = {}        # line_idx → (cf_start_offset, is_bidirectional, test_name)
+
         for k in range(len(result_lines)):
-            lemb = line_embs[k]
+            if polarities[k] > 0:
+                continue  # 異常: 反実仮想不要
+
+            test_name, _ = self._match_test_name(line_embs[k])
+            canonical = self._resolve_test_alias(test_name)
+
+            cf_start = len(cf_texts)
+            if canonical and canonical in self.reference_ranges:
+                # 定量検査 → 双方向
+                cf_texts.append(f"{test_name} 異常 上昇")
+                cf_texts.append(f"{test_name} 異常 低下")
+                cf_meta[k] = (cf_start, True, test_name)
+            else:
+                # 定性検査 → 単方向
+                cf_texts.append(f"{test_name} 異常")
+                cf_meta[k] = (cf_start, False, test_name)
+
+        # 反実仮想テキストを一括embed
+        cf_embs = None
+        if cf_texts:
+            try:
+                resp = self.embed_client.embeddings.create(
+                    model=EMBEDDING_MODEL,
+                    input=cf_texts,
+                )
+                cf_embs = np.array([d.embedding for d in resp.data], dtype=np.float32)
+                cf_norms = np.linalg.norm(cf_embs, axis=1, keepdims=True)
+                cf_norms[cf_norms == 0] = 1.0
+                cf_embs = cf_embs / cf_norms
+            except Exception as e:
+                print(f"[Option3] 反実仮想embedding失敗: {e}")
+                cf_embs = None
+
+        # --- 各結果行を処理 ---
+        for k in range(len(result_lines)):
             orig = result_lines[k]
             ann = annotated[k]
+            pol = float(polarities[k])
+            log_ann = f" → [{ann}]" if ann != orig else ""
 
-            # 検査マッチ（test_name_embsとの最大cos類似度）
-            sims = lemb @ self.test_name_embs.T
-            best_j = int(np.argmax(sims))
-            best_name = self.test_names[best_j]
-            match_sim = float(sims[best_j])
+            if pol > 0:
+                # === 異常結果: 直接法 ===
+                # result_emb × disease_embs → 関連疾患を増幅
+                sims_d = line_embs[k] @ self.disease_embs_normed.T
+                bg = float(sims_d.mean())
 
-            # 極性判定
-            pol = float(lemb @ self.polarity_axis)
-            sign = 1.0 if pol > 0 else -1.0
-            expected = "異常" if sign > 0 else "正常"
+                test_name, match_sim = self._match_test_name(line_embs[k])
+                print(f"  [結果] {orig}{log_ann} → {test_name} (cos={match_sim:.3f}) "
+                      f"pol={pol:+.4f} → 異常（直接法）")
 
-            # ログ（アノテーションがあれば表示）
-            if ann != orig:
-                print(f"  [結果] {orig} → [{ann}] → {best_name} (cos={match_sim:.3f}) pol={pol:+.4f} → {expected}")
+                for c in candidates:
+                    d_idx = self.disease_idx.get(c['disease_name'])
+                    if d_idx is not None:
+                        excess = max(0.0, float(sims_d[d_idx]) - bg)
+                        if excess > 0:
+                            c['similarity'] *= float(np.exp(excess))
             else:
-                print(f"  [結果] {orig} → {best_name} (cos={match_sim:.3f}) pol={pol:+.4f} → {expected}")
+                # === 正常結果: 反実仮想法 ===
+                if cf_embs is None or k not in cf_meta:
+                    continue
 
-            # sim_matrix × sign で全候補疾患の重みを更新
-            # 列平均を差し引き: 平均を超える関連度の分だけ更新
-            # → 無関係な検査結果（Na正常がAMIに影響等）を自動排除
-            bg = float(col_means[best_j])
-            for c in candidates:
-                d_idx = self.disease_idx.get(c['disease_name'])
-                if d_idx is not None:
-                    sim_dt = float(self.sim_matrix[d_idx, best_j])
-                    excess = max(0.0, sim_dt - bg)
-                    if excess > 0:
-                        c['similarity'] *= float(np.exp(sign * excess))
+                cf_start, is_bidir, test_name = cf_meta[k]
+                _, match_sim = self._match_test_name(line_embs[k])
+
+                if is_bidir:
+                    # 双方向: exp(-(excess_up + excess_down))
+                    cf_up = cf_embs[cf_start]
+                    cf_down = cf_embs[cf_start + 1]
+                    sims_up = cf_up @ self.disease_embs_normed.T
+                    sims_down = cf_down @ self.disease_embs_normed.T
+                    bg_up = float(sims_up.mean())
+                    bg_down = float(sims_down.mean())
+
+                    print(f"  [結果] {orig}{log_ann} → {test_name} (cos={match_sim:.3f}) "
+                          f"pol={pol:+.4f} → 正常（双方向反実仮想）")
+
+                    for c in candidates:
+                        d_idx = self.disease_idx.get(c['disease_name'])
+                        if d_idx is not None:
+                            e_up = max(0.0, float(sims_up[d_idx]) - bg_up)
+                            e_down = max(0.0, float(sims_down[d_idx]) - bg_down)
+                            total = e_up + e_down
+                            if total > 0:
+                                c['similarity'] *= float(np.exp(-total))
+                else:
+                    # 単方向: exp(-excess)
+                    cf_emb = cf_embs[cf_start]
+                    sims_d = cf_emb @ self.disease_embs_normed.T
+                    bg = float(sims_d.mean())
+
+                    print(f"  [結果] {orig}{log_ann} → {test_name} (cos={match_sim:.3f}) "
+                          f"pol={pol:+.4f} → 正常（反実仮想）")
+
+                    for c in candidates:
+                        d_idx = self.disease_idx.get(c['disease_name'])
+                        if d_idx is not None:
+                            excess = max(0.0, float(sims_d[d_idx]) - bg)
+                            if excess > 0:
+                                c['similarity'] *= float(np.exp(-excess))
 
         # 降順ソート
         candidates.sort(key=lambda x: x['similarity'], reverse=True)
@@ -922,27 +1002,20 @@ class VeSMedEngine:
     # ----------------------------------------------------------------
     def compute_novelty(self, patient_text: str) -> np.ndarray:
         """
-        患者テキストを行単位で分割・embeddingし、各検査との類似度から
-        新規性スコアを計算する。独立チャネル積方式:
+        患者テキストに既に含まれる検査情報を連続的に割引する。
 
-        ch1: max_line cos(line_emb, test_findings_emb_j)  ← 臨床記述マッチ
-        ch2: max_line cos(line_emb, test_name_emb_j)      ← 検査名マッチ
-        novelty_j = (1 - ch1) × (1 - ch2)
+        novelty_j = 1 - max_line cos(line_emb, test_name_emb_j)
 
-        二つの独立なembeddingチャネルを確率論的に合成。
-        両チャネルとも新規性が残る場合にのみnoveltyが残る。
-        「直接ビリルビン正常値」: ch1=0.58, ch2=0.80 → novelty=0.42×0.20=0.08
-        ハイパーパラメータなし。チャネル追加時は Π(1-sim_ch) に自然拡張。
+        患者テキストが「CRP上昇」と言及していれば cos(line, "CRP") ≈ 0.82
+        → novelty = 0.18 → CRPの推薦は大幅割引。
+        「肝機能異常」のような間接的言及では cos(line, "AST") ≈ 0.5
+        → novelty = 0.5 → 具体的検査はまだ推薦に値する（正しい挙動）。
 
         返り値: (N_tests,) ndarray, 各検査の新規性スコア (0〜1)
         閾値なし、二値判定なし。全てembeddingから連続的に導出。
         """
         n_tests = len(self.test_names)
-        if n_tests == 0:
-            return np.ones(n_tests)
-        has_findings = self.test_findings_embs is not None
-        has_names = self.test_name_embs is not None
-        if not has_findings and not has_names:
+        if n_tests == 0 or self.test_name_embs is None:
             return np.ones(n_tests)
 
         # 患者テキストを行単位で分割（空行除外）
@@ -960,16 +1033,9 @@ class VeSMedEngine:
         l_norms[l_norms == 0] = 1.0
         line_embs = line_embs / l_norms
 
-        # 独立チャネル積: novelty = Π_ch (1 - max_line sim_ch)
-        novelty = np.ones(n_tests)
-
-        if has_findings:
-            sims_findings = line_embs @ self.test_findings_embs.T
-            novelty *= 1.0 - np.clip(sims_findings.max(axis=0), 0.0, 1.0)
-
-        if has_names:
-            sims_names = line_embs @ self.test_name_embs.T
-            novelty *= 1.0 - np.clip(sims_names.max(axis=0), 0.0, 1.0)
+        # 単チャネル: novelty = 1 - max_line cos(line, test_name)
+        sims = line_embs @ self.test_name_embs.T
+        novelty = 1.0 - np.clip(sims.max(axis=0), 0.0, 1.0)
 
         return novelty
 
