@@ -239,20 +239,20 @@ class VeSMedEngine:
         ]
         self.test_idx = {name: i for i, name in enumerate(self.test_names)}
 
-        # 疾患リスト構築（ChromaDBの順序）
-        n_diseases = self.collection.count()
-        all_ids = [f"disease_{i}" for i in range(n_diseases)]
-        disease_names = []
-        disease_embs_list = []
-        batch_size = 100
-        for start in range(0, len(all_ids), batch_size):
-            batch_ids = all_ids[start:start + batch_size]
-            result = self.collection.get(ids=batch_ids, include=["embeddings", "metadatas"])
-            for j, mid in enumerate(result["ids"]):
-                dname = result["metadatas"][j].get("disease_name", "")
-                disease_names.append(dname)
-                disease_embs_list.append(result["embeddings"][j])
+        # 疾患リスト構築（6-Domain Chunking対応: チャンクを疾患ごとに平均）
+        from collections import defaultdict
+        all_data = self.collection.get(include=["embeddings", "metadatas"])
+        disease_chunk_embs = defaultdict(list)
+        for j in range(len(all_data["ids"])):
+            dname = all_data["metadatas"][j].get("disease_name", "")
+            if dname:
+                disease_chunk_embs[dname].append(all_data["embeddings"][j])
+        disease_names = sorted(disease_chunk_embs.keys())
         self.disease_idx = {name: i for i, name in enumerate(disease_names)}
+        disease_embs_list = []
+        for name in disease_names:
+            chunks = np.array(disease_chunk_embs[name], dtype=np.float32)
+            disease_embs_list.append(chunks.mean(axis=0))
         disease_embs = np.array(disease_embs_list, dtype=np.float32)
 
         # 疾患embeddingを正規化して保持（直接法で常に使用）
@@ -1370,7 +1370,11 @@ class VeSMedEngine:
     # Step 2: ベクトル検索 → 候補疾患
     # ----------------------------------------------------------------
     def _embed_and_search(self, text: str) -> list:
-        """単一テキストでChromaDB全件検索。内部用。"""
+        """
+        単一テキストでChromaDB全件検索 → 疾患ごとにmax-chunk類似度で集約。
+        Semantic Chunking対応: 各疾患がN個のチャンクを持ち、
+        最も類似度が高いチャンクの値をその疾患のスコアとする。
+        """
         resp = self.embed_client.embeddings.create(
             model=EMBEDDING_MODEL,
             input=[text],
@@ -1385,19 +1389,23 @@ class VeSMedEngine:
             n_results=n_total,
         )
 
-        candidates = []
+        # 疾患ごとにmax-chunk類似度で集約
+        disease_best = {}  # disease_name -> {similarity, category, urgency}
         if results and results["ids"] and results["ids"][0]:
             for i, doc_id in enumerate(results["ids"][0]):
                 distance = results["distances"][0][i]
                 similarity = 1.0 - distance
                 metadata = results["metadatas"][0][i]
-                candidates.append({
-                    "disease_name": metadata.get("disease_name", ""),
-                    "similarity": similarity,
-                    "category": metadata.get("category", ""),
-                    "urgency": metadata.get("urgency", ""),
-                })
-        return candidates
+                name = metadata.get("disease_name", "")
+                if name not in disease_best or similarity > disease_best[name]["similarity"]:
+                    disease_best[name] = {
+                        "disease_name": name,
+                        "similarity": similarity,
+                        "category": metadata.get("category", ""),
+                        "urgency": metadata.get("urgency", ""),
+                    }
+
+        return list(disease_best.values())
 
     def search_diseases(self, patient_text: str) -> list:
         """
@@ -1714,6 +1722,83 @@ class VeSMedEngine:
             ranked.append({
                 "test_name": tname,
                 "confirm_score": round(score, 6),
+                "novelty": round(nov, 4),
+                "utility": round(utility, 6),
+                "details": details,
+            })
+
+        ranked.sort(key=lambda x: x["utility"], reverse=True)
+        return ranked
+
+    def rank_tests_cluster_mu(self, candidates: list, novelty: np.ndarray = None) -> list:
+        """
+        Part E: 基本推奨 — 候補群の共通必要度ランキング。
+        cluster_mu_j = Σ w_i × sim_matrix[i][j]
+
+        Part C（特異度=cluster_mu - global_mu）と違い、global_muを引かない。
+        「候補疾患群に共通して関連する検査」を推薦する。
+        血液培養、CBC、血液ガス等のルーチン検査が浮上。
+        Part A（鑑別）、Part C（確定）と直交する第3の観点。
+        """
+        if self.sim_matrix is None or len(self.test_names) == 0:
+            return []
+
+        n_tests = len(self.test_names)
+        if novelty is None:
+            novelty = np.ones(n_tests)
+
+        # Part A/Cと同じ重み: 局所重み(平均以上) × 2C重み
+        raw_sims = np.array([c.get("similarity", 0.0) for c in candidates], dtype=float)
+        weights = np.array([
+            self.disease_2c.get(c["disease_name"], {}).get("weight", 1.0)
+            for c in candidates
+        ], dtype=float)
+        sim_centered = np.maximum(0.0, raw_sims - raw_sims.mean())
+        w = sim_centered * weights
+        w_sum = w.sum()
+        if w_sum > 0:
+            w = w / w_sum
+
+        # sim_matrix行を取得
+        disease_rows = []
+        for c in candidates:
+            row = self.disease_idx.get(c["disease_name"])
+            disease_rows.append(row if row is not None else -1)
+        disease_rows = np.array(disease_rows)
+
+        valid_mask = disease_rows >= 0
+        sim_sub = np.zeros((len(candidates), n_tests))
+        sim_sub[valid_mask] = self.sim_matrix[disease_rows[valid_mask]]
+
+        # クラスタ加重平均（global_muを引かない = 共通必要度）
+        w_col = w[:, np.newaxis]
+        cluster_mu = (w_col * sim_sub).sum(axis=0)  # (N_tests,)
+
+        # 動的侵襲性バランシング
+        invasive_discount = self._compute_invasive_penalty(candidates, w)
+
+        # 関連疾患
+        weighted_contrib = w_col * sim_sub
+
+        ranked = []
+        for j, tname in enumerate(self.test_names):
+            score = float(cluster_mu[j])
+            nov = float(novelty[j])
+            inv_disc = float(invasive_discount[j])
+            utility = score * nov * inv_disc
+
+            # 関連疾患Top5
+            contribs = weighted_contrib[:, j]
+            top_idx = np.argsort(contribs)[::-1][:5]
+            details = [
+                {"disease_name": candidates[int(k)]["disease_name"],
+                 "contribution": round(float(contribs[k]), 6)}
+                for k in top_idx if contribs[k] > 0
+            ]
+
+            ranked.append({
+                "test_name": tname,
+                "cluster_mu": round(score, 6),
                 "novelty": round(nov, 4),
                 "utility": round(utility, 6),
                 "details": details,
@@ -2096,16 +2181,18 @@ class VeSMedEngine:
         prompt = f"""以下の臨床テキストを読み、3つのタスクを同時に実行してください。
 
 【タスク1: 実施済み検査の特定】
-すでに実施済み、または患者の現在の状態から「明らかに評価済み」と言える検査を特定。
+テキストに検査結果の数値・判定が明記されている検査だけを実施済みとする。
 - 文字列の一致ではなく「医学的な論理包含」でマッピング
-- 例: 「WBC 9800」→「CBC（白血球分画を含む）」
-- 例: 「CRP 2.5」→「CRP」
+- 例: 「WBC 9800」→「CBC（白血球分画を含む）」が実施済み
+- 例: 「CRP 2.5」→「CRP」が実施済み
 - 出力は必ず検査マスタに存在する正確な名称のみ
 
-【重要】タスク1の注意:
-- 「検査結果の数値が記載されている」場合のみ実施済みとする
-- 患者の症状の訴え（「背中が痛い」「嘔吐した」）は検査の実施を意味しない
-- 「発熱39度」はバイタルサイン測定が行われた根拠になるが、血液検査の根拠にはならない
+【重要】タスク1の厳格ルール — 以下に該当するものは絶対に実施済みにしない:
+- テキストに結果の数値・判定が書かれていない検査（推測で実施済みにしない）
+- 患者の症状の訴え（「背中が痛い」「嘔吐した」→ 検査の実施を意味しない）
+- 臨床状況からの推論（「救急搬送→心電図は当然」「発熱→採血は当然」→ 禁止）
+- 「発熱39度」はバイタルサイン測定の根拠にはなるが、心電図・血液検査・画像検査の根拠にはならない
+- 迷ったら「未実施」とする（偽陰性より偽陽性の害が大きい）
 
 【タスク2: 聴取済みHPE項目の特定】
 すでに聴取済み・確認済みの問診項目・身体診察所見を特定。
@@ -2117,6 +2204,14 @@ class VeSMedEngine:
 タスク2で特定した項目について、陽性(+1)か陰性(-1)かを判定。
 - 「発熱」「腹痛あり」→ +1
 - 「肝疾患なし」「Murphy徴候陰性」→ -1
+
+【重要】タスク2・3の注意:
+- 咳嗽・下痢・頭痛・関節痛・発熱は「急性」「慢性」に分かれています。
+  テキストに期間の記載がある場合は、時間軸が一致する項目を選択してください。
+  期間の記載がない場合は、どちらも選択しないでください。
+  例: 「3ヶ月前からの咳」→「咳嗽（遷延・慢性：3週以上）」
+  例: 「2日前からの下痢」→「下痢（急性：2週未満）」
+  例: 「咳が出る」（期間不明）→ どちらも選択しない
 
 【臨床テキスト】
 {patient_text}
@@ -2201,6 +2296,13 @@ class VeSMedEngine:
 - 陽性所見（「発熱」「腹痛あり」「体温38.5℃」）→ +1
 - 陰性所見（「肝疾患なし」「便秘なし」「Murphy徴候陰性」）→ -1
 
+【重要】時間軸の注意:
+- 咳嗽・下痢・頭痛・関節痛・発熱は「急性」「慢性」に分かれています。
+  テキストに期間の記載がある場合は、時間軸が一致する項目を選択してください。
+  期間の記載がない場合は、どちらも選択しないでください。
+  例: 「3ヶ月前からの咳」→「咳嗽（遷延・慢性：3週以上）」
+  例: 「2日前からの下痢」→「下痢（急性：2週未満）」
+
 出力: [{{"item":"項目名","polarity":1}}, {{"item":"項目名","polarity":-1}}, ...] のJSON配列のみ。
 
 項目リスト: {item_list}
@@ -2236,22 +2338,42 @@ class VeSMedEngine:
 
         return []
 
+    # 背景情報カテゴリ: sim_matrix_hpe更新からスキップし、LLMフィルタのコンテキストのみ
+    _HPE_BACKGROUND_SUBCATS = {"既往歴", "薬剤歴", "嗜好/社会歴", "家族歴"}
+
     def update_from_hpe(self, candidates: list, hpe_findings: list) -> list:
         """
-        問診/身体診察所見から疾患重みを更新。update_from_resultsと同じ数学。
+        問診/身体診察所見から疾患重みを更新（√N正規化方式）。
 
-        陽性所見: similarity *= exp(+excess)  — 関連疾患を増幅
-        陰性所見: similarity *= exp(-excess)  — 関連疾患を抑制
-        excess = max(0, sim_matrix_hpe[d][k] - mean)
+        全所見のdeltaを疾患ごとに合算し、√Nで正規化して1回だけ乗算。
+        N回の指数乗算による発散を防止する。
+
+        既往歴・薬剤歴・社会歴・家族歴は「背景情報」のため、
+        sim_matrix_hpe更新からスキップ（LLMフィルタのコンテキストとしてのみ使用）。
+
+        delta = Σ polarity_k × excess_k
+        similarity *= exp(delta / √N)
         """
         if not hpe_findings or self.sim_matrix_hpe is None:
             return candidates
 
+        # 1. 全所見のdeltaを疾患ごとに合算（背景情報はスキップ）
+        deltas = {}  # disease_name → float
+        active_count = 0
+        skipped_count = 0
         for f in hpe_findings:
             idx = f["index"]
             polarity = f["polarity"]
 
-            # sim_matrix_hpe[:, idx] = 各疾患とこのHPE項目の関連度
+            # 背景情報カテゴリはスキップ
+            if idx < len(self.hpe_items):
+                subcat = self.hpe_items[idx].get("subcategory", "")
+                if subcat in self._HPE_BACKGROUND_SUBCATS:
+                    skipped_count += 1
+                    print(f"  [HPE更新] {f['item']} (pol={polarity:+d}) SKIP (背景: {subcat})")
+                    continue
+
+            active_count += 1
             sims = self.sim_matrix_hpe[:, idx]  # (N_diseases,)
             bg = float(sims.mean())
 
@@ -2260,9 +2382,21 @@ class VeSMedEngine:
                 if d_idx is not None:
                     excess = max(0.0, float(sims[d_idx]) - bg)
                     if excess > 0:
-                        c["similarity"] *= float(np.exp(polarity * excess))
+                        deltas[c["disease_name"]] = deltas.get(c["disease_name"], 0.0) + polarity * excess
 
             print(f"  [HPE更新] {f['item']} (pol={polarity:+d}) bg={bg:.4f}")
+
+        # 2. √Nで正規化して1回だけ乗算（Nは背景スキップ後のアクティブ所見数）
+        if active_count == 0:
+            print(f"  [HPE更新] アクティブ所見なし（全{skipped_count}件が背景情報）")
+            return candidates
+        sqrt_n = math.sqrt(active_count)
+        for c in candidates:
+            delta = deltas.get(c["disease_name"], 0.0)
+            if delta != 0:
+                c["similarity"] *= float(np.exp(delta / sqrt_n))
+
+        print(f"  [HPE更新] √N正規化: active={active_count}, skipped={skipped_count}, √N={sqrt_n:.2f}")
 
         # 重み順にソート
         candidates.sort(key=lambda c: c["similarity"], reverse=True)

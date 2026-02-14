@@ -46,7 +46,7 @@ def analyze_patient(input_text):
     if not input_text.strip():
         return (
             "テキストを入力してください。",
-            None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None,
         )
 
     eng = init_engine()
@@ -113,7 +113,8 @@ def analyze_patient(input_text):
     t2 = _time.time()
     print(f"[TIMING] parallel: {t2-t1:.1f}s")
 
-    # Step 3: ランキング（数学 — 分散/命中/特異度）
+    # Step 3: ランキング（数学 — 分散/命中/特異度/共通度）
+    cluster_mu_tests = eng.rank_tests_cluster_mu(candidates, novelty=novelty)
     ranked_tests = eng.rank_tests(candidates, novelty=novelty)
     critical_tests = eng.rank_tests_critical(candidates, novelty=novelty)
     confirm_tests = eng.rank_tests_confirm(candidates, novelty=novelty)
@@ -138,6 +139,7 @@ def analyze_patient(input_text):
     return (
         status,
         format_diseases_df(candidates),
+        format_cluster_mu_df(cluster_mu_tests),
         format_tests_df(ranked_tests),
         format_critical_df(critical_tests),
         format_confirm_df(confirm_tests),
@@ -152,7 +154,7 @@ def reset_session():
     return (
         "",
         "リセットしました。",
-        None, None, None, None, None, None, None, None,
+        None, None, None, None, None, None, None, None, None,
     )
 
 
@@ -218,6 +220,23 @@ def format_confirm_df(confirm_tests):
             "検査名": t["test_name"],
             "効用": f"{t['utility']:.4f}",
             "特異": f"{t['confirm_score']:.4f}",
+            "新規": f"{t.get('novelty', 1.0):.2f}",
+            "関連疾患": related,
+        })
+    return pd.DataFrame(rows)
+
+
+def format_cluster_mu_df(cluster_mu_tests):
+    rows = []
+    for i, t in enumerate(cluster_mu_tests[:TOP_K_TESTS]):
+        related = ", ".join(d["disease_name"] for d in t.get("details", [])[:3])
+        if len(t.get("details", [])) > 3:
+            related += f" 他{len(t['details']) - 3}件"
+        rows.append({
+            "#": i + 1,
+            "検査名": t["test_name"],
+            "効用": f"{t['utility']:.4f}",
+            "共通度": f"{t['cluster_mu']:.4f}",
             "新規": f"{t.get('novelty', 1.0):.2f}",
             "関連疾患": related,
         })
@@ -310,6 +329,12 @@ with gr.Blocks(
             interactive=False,
         )
     with gr.Row():
+        cluster_mu_table = gr.Dataframe(
+            label="Part E: 基本推奨（候補群の共通必要度）",
+            headers=["#", "検査名", "効用", "共通度", "新規", "関連疾患"],
+            interactive=False,
+        )
+    with gr.Row():
         with gr.Column(scale=1):
             test_table = gr.Dataframe(
                 label="Part A: 鑑別推奨（分散ベース）",
@@ -365,8 +390,8 @@ with gr.Blocks(
 
     # ===== イベント =====
 
-    outputs = [status_text, disease_table, test_table, critical_table, confirm_table,
-               hpe_hx_table, hpe_pe_table, excluded_table, suppressed_table]
+    outputs = [status_text, disease_table, cluster_mu_table, test_table, critical_table,
+               confirm_table, hpe_hx_table, hpe_pe_table, excluded_table, suppressed_table]
 
     analyze_btn.click(
         fn=analyze_patient,
