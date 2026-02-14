@@ -843,9 +843,9 @@ class VeSMedEngine:
     # Option 3: 検査結果による疾患重み更新（直接法）
     # ----------------------------------------------------------------
     def update_from_results(self, candidates: list, result_lines: list,
-                            symptoms: str = "", mode: str = "fast") -> list:
+                            symptoms: str = "") -> list:
         """
-        Option 3: 検査結果から疾患重みを更新（直接法）。
+        検査結果から疾患重みを更新（直接法）。
 
         sim_matrixを使わず、結果テキストのembeddingを疾患embeddingと直接比較。
 
@@ -853,18 +853,14 @@ class VeSMedEngine:
         正常結果（定量）: 双方向反実仮想 "検査名 異常 上昇/低下" →
                           exp(-(excess_up + excess_down)) で抑制
         正常結果（定性）: 単方向反実仮想 "検査名 異常" → exp(-excess) で抑制
-
-        mode:
-          "fast"  — 基準範囲テーブルでアノテーション（確定的、1-2秒）
-          "llm"   — LLMで文脈付きアノテーション（3-5秒、文脈依存）
         """
         if not result_lines or self.polarity_axis is None:
             return candidates
         if self.disease_embs_normed is None:
             return candidates
 
-        # アノテーション（モード別）
-        if mode == "llm" and symptoms:
+        # アノテーション（LLM優先、フォールバック: 基準範囲テーブル）
+        if symptoms:
             annotated = self._annotate_with_llm(symptoms, result_lines)
         else:
             annotated = self._annotate_with_ranges(result_lines)
@@ -1074,7 +1070,7 @@ class VeSMedEngine:
     # ----------------------------------------------------------------
     # テキスト自動分離: 症状/所見 vs 検査結果
     # ----------------------------------------------------------------
-    def split_symptoms_results(self, text: str, mode: str = "llm") -> tuple:
+    def split_symptoms_results(self, text: str) -> tuple:
         """
         自由記述テキストを「症状・所見」と「検査結果」に自動分離。
 
@@ -1084,10 +1080,7 @@ class VeSMedEngine:
         if not lines:
             return "", []
 
-        if mode == "llm":
-            return self._split_with_llm(text, lines)
-
-        return self._split_with_embedding(lines)
+        return self._split_with_llm(text, lines)
 
     def _split_with_llm(self, full_text: str, lines: list) -> tuple:
         """LLMでテキストを症状と検査結果に分離"""
@@ -1164,26 +1157,19 @@ class VeSMedEngine:
     # ----------------------------------------------------------------
     # Step 1: Novelty計算（v2: LLM二値判定 + embeddingフォールバック）
     # ----------------------------------------------------------------
-    def compute_novelty(self, patient_text: str, mode: str = "fast") -> np.ndarray:
+    def compute_novelty(self, patient_text: str) -> np.ndarray:
         """
         v2哲学: 知覚はembedding、判断はLLM。
 
         noveltyは二値: 実施済み=0, 未実施=1。
         「やったかどうか」は論理判断 → LLMに任せる。
-        embeddingの連続cosで近似すると、同じ意味領域の未実施検査まで
-        割引される（novelty 0.5問題）。
-
-        mode="llm": LLMが既実施検査を抽出 → 二値化
-        mode="fast": embeddingギャップ検出 → 二値化（LLM不要）
+        LLM失敗時はembeddingギャップ検出にフォールバック。
         """
         n_tests = len(self.test_names)
         if n_tests == 0 or self.test_name_embs is None:
             return np.ones(n_tests)
 
-        if mode == "llm":
-            return self._compute_novelty_llm(patient_text)
-
-        return self._compute_novelty_gap(patient_text)
+        return self._compute_novelty_llm(patient_text)
 
     def _compute_novelty_llm(self, patient_text: str) -> np.ndarray:
         """LLMに既実施検査を抽出させて二値noveltyを返す"""
@@ -2010,23 +1996,17 @@ class VeSMedEngine:
         return candidates
 
     def compute_novelty_hpe(self, patient_text: str,
-                            hpe_findings: list = None,
-                            mode: str = "fast") -> np.ndarray:
+                            hpe_findings: list = None) -> np.ndarray:
         """
-        Part D用novelty（v2: 二値判定）。
-
-        mode="llm": LLMが既聴取項目を抽出 → 二値化
-        mode="fast": embeddingギャップ検出 → 二値化
-        hpe_findings: LLM抽出結果があればそれで上書き
+        Part D用novelty（v2: LLM二値判定）。
+        LLM失敗時はembeddingギャップ検出にフォールバック。
+        hpe_findings: LLM抽出結果があればそれで上書き。
         """
         n_hpe = len(self.hpe_names)
         if n_hpe == 0 or self.hpe_name_embs is None:
             return np.ones(n_hpe)
 
-        if mode == "llm":
-            novelty = self._compute_novelty_hpe_llm(patient_text)
-        else:
-            novelty = self._compute_novelty_hpe_gap(patient_text)
+        novelty = self._compute_novelty_hpe_llm(patient_text)
 
         # LLM抽出結果で上書き（完全抑制）
         if hpe_findings:

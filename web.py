@@ -3,11 +3,11 @@ VeSMed - Web UI (Gradio)
 v2アーキテクチャ: embedding知覚 + LLM判断
 
 フロー:
-  1. テキスト入力 → 症状/検査結果を自動分離
+  1. テキスト入力 → LLMで症状/検査結果を自動分離
   2. 症状 → embedding検索 → 候補疾患（知覚）
   3. LLM論理フィルタ → 矛盾疾患を除外（判断）
   4. 検査結果 → 極性判定 × 反実仮想で疾患重み更新
-  5. Novelty → LLM二値判定 or embeddingギャップ検出
+  5. Novelty → LLM二値判定
   6. 分散/命中/特異度 → 検査・問診ランキング
 """
 
@@ -30,15 +30,15 @@ def init_engine():
 # コールバック
 # ----------------------------------------------------------------
 
-def analyze_patient(input_text, mode):
+def analyze_patient(input_text):
     """
     v2パイプライン: embedding知覚 + LLM判断
 
-    1. テキスト分離（LLM/embedding）
+    1. テキスト分離（LLM）
     2. 疾患検索（embedding — 知覚）
     3. 論理フィルタ（LLM — 判断: 矛盾疾患を除外）
     4. 検査結果更新（polarity + 反実仮想）
-    5. Novelty（LLM二値 / embeddingギャップ）
+    5. Novelty（LLM二値判定）
     6. ランキング（数学 — 分散/命中/特異度）
     """
     import time as _time
@@ -50,14 +50,11 @@ def analyze_patient(input_text, mode):
         )
 
     eng = init_engine()
-    engine_mode = "llm" if "LLM" in mode else "fast"
 
     t0 = _time.time()
 
-    # Step 0: 症状と検査結果を自動分離
-    symptoms_text, result_lines = eng.split_symptoms_results(
-        input_text, mode=engine_mode,
-    )
+    # Step 0: 症状と検査結果を自動分離（LLM）
+    symptoms_text, result_lines = eng.split_symptoms_results(input_text)
     t_split = _time.time()
     print(f"[TIMING] split: {t_split-t0:.1f}s")
 
@@ -78,47 +75,42 @@ def analyze_patient(input_text, mode):
     cands_copy = copy.deepcopy(candidates)
 
     with ThreadPoolExecutor(max_workers=5) as executor:
-        # LLM論理フィルタ（v2: 矛盾疾患を除外）
+        # LLM論理フィルタ: 矛盾疾患を除外
         fut_filter = executor.submit(
             eng.filter_contradictions, candidates, full_text,
-        ) if engine_mode == "llm" else None
+        )
 
         # 検査結果更新
         fut_update = executor.submit(
             eng.update_from_results, cands_copy, result_lines,
-            symptoms_text, engine_mode,
+            symptoms_text,
         ) if result_lines else None
 
-        # Novelty（v2: 二値化）
+        # Novelty: LLM二値判定
         fut_novelty = executor.submit(
-            eng.compute_novelty, full_text, engine_mode,
+            eng.compute_novelty, full_text,
         )
 
-        # HPE所見抽出（LLMモードのみ）
+        # HPE所見抽出
         fut_hpe_extract = executor.submit(
             eng.extract_hpe_findings, full_text,
-        ) if engine_mode == "llm" else None
+        )
 
-        # HPE Novelty（v2: 二値化）
+        # HPE Novelty: LLM二値判定
         fut_novelty_hpe = executor.submit(
-            eng.compute_novelty_hpe, full_text, mode=engine_mode,
+            eng.compute_novelty_hpe, full_text,
         )
 
         # 結果回収
         novelty = fut_novelty.result()
-        hpe_findings = fut_hpe_extract.result() if fut_hpe_extract else []
+        hpe_findings = fut_hpe_extract.result()
         novelty_hpe_base = fut_novelty_hpe.result()
 
-        # LLMフィルタ適用: 矛盾疾患を除外
-        if fut_filter:
-            filtered_candidates = fut_filter.result()
-        else:
-            filtered_candidates = candidates
+        filtered_candidates = fut_filter.result()
 
         # 検査結果更新（フィルタ前のcopyで更新し、フィルタ後に反映）
         if fut_update:
             updated_cands = fut_update.result()
-            # フィルタで残った疾患のみ更新結果を反映
             updated_map = {c["disease_name"]: c for c in updated_cands}
             for c in filtered_candidates:
                 if c["disease_name"] in updated_map:
@@ -134,7 +126,7 @@ def analyze_patient(input_text, mode):
     novelty_hpe = novelty_hpe_base
 
     t2 = _time.time()
-    print(f"[TIMING] parallel ({engine_mode}): {t2-t1:.1f}s")
+    print(f"[TIMING] parallel: {t2-t1:.1f}s")
 
     # Step 3: ランキング（数学 — 分散/命中/特異度）
     ranked_tests = eng.rank_tests(candidates, novelty=novelty)
@@ -143,14 +135,13 @@ def analyze_patient(input_text, mode):
     ranked_hpe = eng.rank_hpe(candidates, novelty_hpe=novelty_hpe)
     t3 = _time.time()
     print(f"[TIMING] rank: {t3-t2:.1f}s")
-    print(f"[TIMING] === TOTAL ({engine_mode}): {t3-t0:.1f}s ===")
+    print(f"[TIMING] === TOTAL: {t3-t0:.1f}s ===")
 
     n_results = len(result_lines)
     n_total = len(eng.disease_db)
     n_filtered = n_total - len(candidates)
-    mode_label = "LLM注釈" if engine_mode == "llm" else "高速"
     filter_info = f" / {n_filtered}疾患除外" if n_filtered > 0 else ""
-    status = f"分析完了（{mode_label}）/ {len(candidates)}疾患{filter_info} / 検査結果{n_results}件"
+    status = f"分析完了 / {len(candidates)}疾患{filter_info} / 検査結果{n_results}件"
 
     return (
         status,
@@ -285,11 +276,6 @@ with gr.Blocks(
                 analyze_btn = gr.Button("分析開始", variant="primary", scale=2)
                 reset_btn = gr.Button("リセット", variant="secondary", scale=1)
         with gr.Column(scale=1):
-            mode_radio = gr.Radio(
-                choices=["高速（基準範囲）", "LLM注釈（文脈考慮）"],
-                value="高速（基準範囲）",
-                label="結果解釈モード",
-            )
             status_text = gr.Textbox(label="ステータス", interactive=False, lines=2)
 
     gr.Markdown("---")
@@ -345,12 +331,12 @@ with gr.Blocks(
 
     analyze_btn.click(
         fn=analyze_patient,
-        inputs=[input_text, mode_radio],
+        inputs=[input_text],
         outputs=outputs,
     )
     input_text.submit(
         fn=analyze_patient,
-        inputs=[input_text, mode_radio],
+        inputs=[input_text],
         outputs=outputs,
     )
 

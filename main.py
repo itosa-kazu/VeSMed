@@ -137,11 +137,11 @@ def main():
         candidates = engine.search_diseases(symptoms_text)
         candidates = engine.compute_priors(candidates)
 
-        # Step 2: 検査結果で重み更新（Option 3、高速モード）
+        # Step 2: 検査結果で重み更新
         if result_lines:
             candidates = engine.update_from_results(
                 candidates, result_lines,
-                symptoms=symptoms_text, mode="fast",
+                symptoms=symptoms_text,
             )
 
         # 表示
