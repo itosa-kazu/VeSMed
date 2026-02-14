@@ -1162,44 +1162,128 @@ class VeSMedEngine:
         return '\n'.join(symptoms), results
 
     # ----------------------------------------------------------------
-    # Step 1: Novelty計算（患者テキストに既に含まれる情報を連続的に割引）
+    # Step 1: Novelty計算（v2: LLM二値判定 + embeddingフォールバック）
     # ----------------------------------------------------------------
-    def compute_novelty(self, patient_text: str) -> np.ndarray:
+    def compute_novelty(self, patient_text: str, mode: str = "fast") -> np.ndarray:
         """
-        患者テキストに既に含まれる検査情報を連続的に割引する。
+        v2哲学: 知覚はembedding、判断はLLM。
 
-        novelty_j = 1 - max_line cos(line_emb, test_name_emb_j)
+        noveltyは二値: 実施済み=0, 未実施=1。
+        「やったかどうか」は論理判断 → LLMに任せる。
+        embeddingの連続cosで近似すると、同じ意味領域の未実施検査まで
+        割引される（novelty 0.5問題）。
 
-        患者テキストが「CRP上昇」と言及していれば cos(line, "CRP") ≈ 0.82
-        → novelty = 0.18 → CRPの推薦は大幅割引。
-        「肝機能異常」のような間接的言及では cos(line, "AST") ≈ 0.5
-        → novelty = 0.5 → 具体的検査はまだ推薦に値する（正しい挙動）。
-
-        返り値: (N_tests,) ndarray, 各検査の新規性スコア (0〜1)
-        閾値なし、二値判定なし。全てembeddingから連続的に導出。
+        mode="llm": LLMが既実施検査を抽出 → 二値化
+        mode="fast": embeddingギャップ検出 → 二値化（LLM不要）
         """
         n_tests = len(self.test_names)
         if n_tests == 0 or self.test_name_embs is None:
             return np.ones(n_tests)
 
-        # 患者テキストを行単位で分割（空行除外）
+        if mode == "llm":
+            return self._compute_novelty_llm(patient_text)
+
+        return self._compute_novelty_gap(patient_text)
+
+    def _compute_novelty_llm(self, patient_text: str) -> np.ndarray:
+        """LLMに既実施検査を抽出させて二値noveltyを返す"""
+        n_tests = len(self.test_names)
+        novelty = np.ones(n_tests)
+
+        # サンプル検査名（LLMに全リストは送れないので代表的なものを提示）
+        sample_names = self.test_names[:80]
+        sample_text = json.dumps(sample_names, ensure_ascii=False)
+
+        prompt = f"""以下の臨床テキストから、既に実施済み・結果が判明している検査を全て列挙してください。
+
+ルール:
+- 検査名は下記リストから選ぶか、テキスト中の検査名をそのまま使う
+- 「WBC 15000」→「白血球数」、「CRP 8.5」→「CRP」のように正規化
+- 「心電図ST変化なし」→「12誘導心電図」、「胸部X線異常なし」→「胸部X線」
+- 「CBC」→「白血球数」「赤血球数」「ヘモグロビン」「血小板数」に展開
+- 結果の陽性/陰性は問わず、実施されたものを全て列挙
+
+臨床テキスト:
+{patient_text}
+
+検査名リスト（参考）:
+{sample_text}
+
+出力: JSON配列 ["検査名1", "検査名2", ...]"""
+
+        try:
+            content = self._llm_call([
+                {"role": "system", "content": "JSON配列のみ出力。説明不要。"},
+                {"role": "user", "content": prompt},
+            ])
+            start = content.find("[")
+            end = content.rfind("]") + 1
+            if start >= 0 and end > start:
+                done_tests = json.loads(content[start:end])
+                matched = 0
+                for dt in done_tests:
+                    # 完全一致
+                    if dt in self.test_idx:
+                        novelty[self.test_idx[dt]] = 0.0
+                        matched += 1
+                        continue
+                    # 部分一致
+                    for tname, tidx in self.test_idx.items():
+                        if dt in tname or tname in dt:
+                            novelty[tidx] = 0.0
+                            matched += 1
+                            break
+                print(f"  [Novelty LLM] {len(done_tests)}件抽出, {matched}件マッチ → 二値化")
+                return novelty
+        except Exception as e:
+            print(f"  [Novelty LLM] 失敗、ギャップ法にフォールバック: {e}")
+
+        return self._compute_novelty_gap(patient_text)
+
+    def _compute_novelty_gap(self, patient_text: str) -> np.ndarray:
+        """embeddingギャップ検出で二値noveltyを返す（LLM不要）"""
+        n_tests = len(self.test_names)
+        novelty = np.ones(n_tests)
+
         lines = [l.strip() for l in patient_text.split('\n') if l.strip()]
         if not lines:
-            return np.ones(n_tests)
+            return novelty
 
-        # 全行を一括embed
-        resp = self.embed_client.embeddings.create(
-            model=EMBEDDING_MODEL,
-            input=lines,
-        )
-        line_embs = np.array([d.embedding for d in resp.data], dtype=np.float32)
-        l_norms = np.linalg.norm(line_embs, axis=1, keepdims=True)
-        l_norms[l_norms == 0] = 1.0
-        line_embs = line_embs / l_norms
+        try:
+            resp = self.embed_client.embeddings.create(
+                model=EMBEDDING_MODEL,
+                input=lines,
+            )
+            line_embs = np.array([d.embedding for d in resp.data], dtype=np.float32)
+            l_norms = np.linalg.norm(line_embs, axis=1, keepdims=True)
+            l_norms[l_norms == 0] = 1.0
+            line_embs = line_embs / l_norms
+        except Exception:
+            return novelty
 
-        # 単チャネル: novelty = 1 - max_line cos(line, test_name)
+        # 各検査の最大cos
         sims = line_embs @ self.test_name_embs.T
-        novelty = 1.0 - np.clip(sims.max(axis=0), 0.0, 1.0)
+        max_cos = sims.max(axis=0)  # (N_tests,)
+
+        # ギャップ検出: ソートして最大の隙間を見つける
+        sorted_cos = np.sort(max_cos)[::-1]
+        gaps = sorted_cos[:-1] - sorted_cos[1:]
+
+        if len(gaps) > 0:
+            # 上位20%の中で最大ギャップを探す（実施済みは少数のはず）
+            search_range = max(5, len(gaps) // 5)
+            best_gap_idx = int(np.argmax(gaps[:search_range]))
+            threshold = (sorted_cos[best_gap_idx] + sorted_cos[best_gap_idx + 1]) / 2
+
+            # 閾値が低すぎる場合は抑制しない（ギャップが不明瞭）
+            if threshold > 0.55:
+                novelty[max_cos >= threshold] = 0.0
+                n_done = int((max_cos >= threshold).sum())
+                print(f"  [Novelty Gap] 閾値={threshold:.3f}, {n_done}件抑制")
+            else:
+                print(f"  [Novelty Gap] ギャップ不明瞭(th={threshold:.3f}), 抑制なし")
+        else:
+            print(f"  [Novelty Gap] 検査なし")
 
         return novelty
 
@@ -1260,6 +1344,67 @@ class VeSMedEngine:
         return candidates
 
     # ----------------------------------------------------------------
+    # Step 3.5: LLM論理フィルタ（v2: 矛盾疾患を除外）
+    # ----------------------------------------------------------------
+    def filter_contradictions(self, candidates: list, patient_text: str) -> list:
+        """
+        v2哲学: 判断はLLM。
+
+        embedding検索は意味的類似性で候補を出すが、論理的矛盾を見逃す:
+        - 「ANA陰性」なのにSLEが上位（embeddingは否定を区別できない）
+        - 「トロポニン陰性」なのにSTEMIが上位
+        - 男性なのにPID/卵巣嚢腫が上位
+
+        LLMが論理矛盾を検出し、候補から除外する。
+        embedding（知覚）の出力をLLM（判断）がフィルタする接着層。
+        """
+        # 上位20疾患をLLMに提示
+        top_n = min(20, len(candidates))
+        disease_list = [f"- {c['disease_name']}" for c in candidates[:top_n]]
+
+        prompt = f"""以下の患者テキストと候補疾患リストを見て、
+患者テキストの内容と**論理的に矛盾する**疾患を指摘してください。
+
+論理的矛盾とは:
+- 必須検査が陰性なのにその疾患が候補（例: ANA陰性→SLE除外）
+- 性別と合わない疾患（例: 男性→PID除外）
+- 年齢と合わない疾患（例: 28歳→リウマチ性多発筋痛症は通常50歳以上）
+- 明確に否定された所見が必須の疾患
+
+※ 軽微な矛盾は無視。確実な矛盾のみ。
+
+患者テキスト:
+{patient_text}
+
+候補疾患:
+{chr(10).join(disease_list)}
+
+出力（JSON配列）:
+["疾患名1", "疾患名2", ...]
+矛盾なしなら空配列 []"""
+
+        try:
+            content = self._llm_call([
+                {"role": "system", "content": "JSON配列のみ出力。説明不要。"},
+                {"role": "user", "content": prompt},
+            ])
+            start = content.find("[")
+            end = content.rfind("]") + 1
+            if start >= 0 and end > start:
+                contradictions = json.loads(content[start:end])
+                if contradictions:
+                    contra_set = set(contradictions)
+                    filtered = [c for c in candidates if c["disease_name"] not in contra_set]
+                    n_removed = len(candidates) - len(filtered)
+                    if n_removed > 0:
+                        print(f"  [LLMフィルタ] {n_removed}疾患除外: {contradictions}")
+                        return filtered
+        except Exception as e:
+            print(f"  [LLMフィルタ] 失敗（スキップ）: {e}")
+
+        return candidates
+
+    # ----------------------------------------------------------------
     # Step 4: 検査ランキング（prior加重分散）
     # ----------------------------------------------------------------
     def rank_tests(self, candidates: list, novelty: np.ndarray = None) -> list:
@@ -1267,10 +1412,9 @@ class VeSMedEngine:
         各検査について、疑い疾患群に対するcos類似度のprior加重分散を計算。
         分散が大きい = 疾患間でバラつく = 鑑別に有用な検査。
 
-        utility = variance × exp(quality) × novelty × (1 - risk_relevance)
+        utility = variance × novelty
 
-        novelty: compute_novelty()の返り値。患者テキストに既に含まれる情報を
-        連続的に割引する。閾値なし、二値判定なし。
+        novelty: v2二値判定（実施済み=0, 未実施=1）。
         """
         if self.sim_matrix is None or len(self.test_names) == 0:
             return []
@@ -1866,47 +2010,118 @@ class VeSMedEngine:
         return candidates
 
     def compute_novelty_hpe(self, patient_text: str,
-                            hpe_findings: list = None) -> np.ndarray:
+                            hpe_findings: list = None,
+                            mode: str = "fast") -> np.ndarray:
         """
-        Part D用novelty。
+        Part D用novelty（v2: 二値判定）。
 
-        hpe_findings提供時: LLM抽出結果で完全抑制 + embedding二重マッチ
-        hpe_findings未提供: embeddingのみ（LLM呼び出しなし）
+        mode="llm": LLMが既聴取項目を抽出 → 二値化
+        mode="fast": embeddingギャップ検出 → 二値化
+        hpe_findings: LLM抽出結果があればそれで上書き
         """
         n_hpe = len(self.hpe_names)
         if n_hpe == 0 or self.hpe_name_embs is None:
             return np.ones(n_hpe)
 
-        lines = [l.strip() for l in patient_text.split('\n') if l.strip()]
-        if not lines:
-            return np.ones(n_hpe)
-
-        # Embedding二重マッチ
-        resp = self.embed_client.embeddings.create(
-            model=EMBEDDING_MODEL,
-            input=lines,
-        )
-        line_embs = np.array([d.embedding for d in resp.data], dtype=np.float32)
-        l_norms = np.linalg.norm(line_embs, axis=1, keepdims=True)
-        l_norms[l_norms == 0] = 1.0
-        line_embs = line_embs / l_norms
-
-        sims_name = line_embs @ self.hpe_name_embs.T
-        max_name = sims_name.max(axis=0)
-
-        if self.hpe_hyp_embs is not None:
-            sims_hyp = line_embs @ self.hpe_hyp_embs.T
-            max_hyp = sims_hyp.max(axis=0)
-            max_sim = np.maximum(max_name, max_hyp)
+        if mode == "llm":
+            novelty = self._compute_novelty_hpe_llm(patient_text)
         else:
-            max_sim = max_name
+            novelty = self._compute_novelty_hpe_gap(patient_text)
 
-        novelty = 1.0 - np.clip(max_sim, 0.0, 1.0)
-
-        # LLM抽出結果で上書き（完全抑制、極性問わず聴取済み=推薦不要）
+        # LLM抽出結果で上書き（完全抑制）
         if hpe_findings:
             for f in hpe_findings:
                 novelty[f["index"]] = 0.0
+
+        return novelty
+
+    def _compute_novelty_hpe_llm(self, patient_text: str) -> np.ndarray:
+        """LLMに既聴取の問診・身体診察項目を抽出させる"""
+        n_hpe = len(self.hpe_names)
+        novelty = np.ones(n_hpe)
+
+        sample_names = self.hpe_names[:80]
+        sample_text = json.dumps(sample_names, ensure_ascii=False)
+
+        prompt = f"""以下の臨床テキストから、既に聴取済み・確認済みの問診項目・身体診察所見を全て列挙してください。
+
+ルール:
+- 患者が自発的に述べた症状も「聴取済み」に含める
+- 「右下腹部痛を主訴に」→ 「右下腹部痛」は聴取済み
+- 「発熱38度」→ 「発熱」は聴取済み
+- 「嘔気あり」→ 「嘔気・嘔吐」は聴取済み
+- 身体所見の記載があればそれも含める
+
+臨床テキスト:
+{patient_text}
+
+項目リスト（参考）:
+{sample_text}
+
+出力: JSON配列 ["項目名1", "項目名2", ...]"""
+
+        try:
+            content = self._llm_call([
+                {"role": "system", "content": "JSON配列のみ出力。説明不要。"},
+                {"role": "user", "content": prompt},
+            ])
+            start = content.find("[")
+            end = content.rfind("]") + 1
+            if start >= 0 and end > start:
+                done_items = json.loads(content[start:end])
+                matched = 0
+                for di in done_items:
+                    for k, name in enumerate(self.hpe_names):
+                        if di == name or di in name or name in di:
+                            novelty[k] = 0.0
+                            matched += 1
+                            break
+                print(f"  [HPE Novelty LLM] {len(done_items)}件抽出, {matched}件マッチ → 二値化")
+                return novelty
+        except Exception as e:
+            print(f"  [HPE Novelty LLM] 失敗、ギャップ法にフォールバック: {e}")
+
+        return self._compute_novelty_hpe_gap(patient_text)
+
+    def _compute_novelty_hpe_gap(self, patient_text: str) -> np.ndarray:
+        """embeddingギャップ検出で二値HPE noveltyを返す"""
+        n_hpe = len(self.hpe_names)
+        novelty = np.ones(n_hpe)
+
+        lines = [l.strip() for l in patient_text.split('\n') if l.strip()]
+        if not lines:
+            return novelty
+
+        try:
+            resp = self.embed_client.embeddings.create(
+                model=EMBEDDING_MODEL,
+                input=lines,
+            )
+            line_embs = np.array([d.embedding for d in resp.data], dtype=np.float32)
+            l_norms = np.linalg.norm(line_embs, axis=1, keepdims=True)
+            l_norms[l_norms == 0] = 1.0
+            line_embs = line_embs / l_norms
+        except Exception:
+            return novelty
+
+        sims = line_embs @ self.hpe_name_embs.T
+        max_cos = sims.max(axis=0)
+
+        # ギャップ検出
+        sorted_cos = np.sort(max_cos)[::-1]
+        gaps = sorted_cos[:-1] - sorted_cos[1:]
+
+        if len(gaps) > 0:
+            search_range = max(5, len(gaps) // 5)
+            best_gap_idx = int(np.argmax(gaps[:search_range]))
+            threshold = (sorted_cos[best_gap_idx] + sorted_cos[best_gap_idx + 1]) / 2
+
+            if threshold > 0.55:
+                novelty[max_cos >= threshold] = 0.0
+                n_done = int((max_cos >= threshold).sum())
+                print(f"  [HPE Novelty Gap] 閾値={threshold:.3f}, {n_done}件抑制")
+            else:
+                print(f"  [HPE Novelty Gap] ギャップ不明瞭(th={threshold:.3f}), 抑制なし")
 
         return novelty
 
