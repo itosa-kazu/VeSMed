@@ -4,3 +4,8 @@ __pycache__/
 nul
 data/chroma_db/
 .env
+.env.*
+!.env.example
+*.pem
+thermal-outlet-*.json
+.gradio/
