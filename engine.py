@@ -110,6 +110,10 @@ class VeSMedEngine:
         self.test_quality = {}  # test_name → {"value": float, "feasibility": float}
         self._compute_test_quality()
 
+        # 検査の侵襲性スコア（動的侵襲性バランシング用）
+        self.cos_invasive = None  # (N_tests,) ndarray — 各検査の侵襲度
+        self._compute_invasive_scores()
+
         # 検査リスクembedding（risk_description → embedding）
         self.risk_embs = {}  # test_name → np.array (4096,)
         self._compute_risk_embeddings()
@@ -482,6 +486,84 @@ class VeSMedEngine:
             json.dump(self.test_quality, f, ensure_ascii=False, indent=1)
 
         print(f"[2Q] {len(self.test_quality)}検査の差分軸スコア計算完了")
+
+    # ----------------------------------------------------------------
+    # 検査侵襲性スコア計算（動的侵襲性バランシング用）
+    # ----------------------------------------------------------------
+    def _compute_invasive_scores(self):
+        """
+        各検査のquality_descriptionと侵襲性アンカーのcos類似度を計算。
+
+        cos_invasive_j = cos(quality_desc_emb_j, invasive_anchor_emb)
+
+        ランキング時に:
+          expected_criticality = Σ(w_i × cos_critical_i)
+          penalty_j = max(0, cos_invasive_j - expected_criticality)
+          utility *= exp(-penalty_j)
+
+        軽症なのに骨髄穿刺等の侵襲的検査がランキング上位に来るのを防ぐ。
+        """
+        cache_file = os.path.join(DATA_DIR, "invasive_scores.json")
+
+        if not self.test_names:
+            return
+
+        # キャッシュチェック
+        if os.path.exists(cache_file):
+            with open(cache_file, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            cached_names = cached.get("test_names", [])
+            if cached_names == self.test_names and "scores" in cached:
+                self.cos_invasive = np.array(cached["scores"], dtype=np.float32)
+                print(f"[Invasive] キャッシュから{len(self.cos_invasive)}件読込")
+                return
+
+        # 侵襲性アンカー
+        invasive_anchor = (
+            "全身麻酔下でカテーテル挿入・臓器穿刺・開腹を伴い、"
+            "術後に疼痛・出血・発熱・創部感染の所見が高頻度に出現する。"
+            "血行動態不安定・凝固異常・腎機能低下の患者では合併症所見が増悪する。"
+        )
+
+        # quality_descriptionを取得（ない場合は検査名で代用）
+        texts = []
+        for tname in self.test_names:
+            desc = self.test_db.get(tname, {}).get("quality_description", "")
+            texts.append(desc if desc else tname)
+
+        # [anchor] + [test1, test2, ...] を一括embed
+        all_texts = [invasive_anchor] + texts
+        embs = self._batch_embed(all_texts)
+        if embs is None:
+            print("[Invasive] embedding失敗")
+            self.cos_invasive = np.zeros(len(self.test_names), dtype=np.float32)
+            return
+
+        # 正規化
+        norms = np.linalg.norm(embs, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        embs_normed = embs / norms
+
+        anchor_emb = embs_normed[0]     # (dim,)
+        test_embs = embs_normed[1:]     # (N_tests, dim)
+
+        # cos類似度
+        self.cos_invasive = test_embs @ anchor_emb  # (N_tests,)
+
+        # キャッシュ保存
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump({
+                "test_names": self.test_names,
+                "scores": self.cos_invasive.tolist(),
+            }, f, ensure_ascii=False)
+
+        # 上位/下位を表示
+        sorted_idx = np.argsort(self.cos_invasive)[::-1]
+        top5 = [(self.test_names[i], f"{self.cos_invasive[i]:.3f}") for i in sorted_idx[:5]]
+        bot5 = [(self.test_names[i], f"{self.cos_invasive[i]:.3f}") for i in sorted_idx[-5:]]
+        print(f"[Invasive] {len(self.cos_invasive)}検査の侵襲度計算完了")
+        print(f"  Top5(侵襲大): {top5}")
+        print(f"  Bot5(侵襲小): {bot5}")
 
     # ----------------------------------------------------------------
     # 検査リスクembedding計算（起動時に1回）
@@ -1072,27 +1154,41 @@ class VeSMedEngine:
     # ----------------------------------------------------------------
     def split_symptoms_results(self, text: str) -> tuple:
         """
-        自由記述テキストを「症状・所見」と「検査結果」に自動分離。
+        自由記述テキストを「陽性症状」「陰性所見」「検査結果」に自動分離。
 
-        Returns: (symptoms_text: str, result_lines: list[str])
+        陽性所見 → embedding検索（search_diseases）に渡す
+        陰性所見 → filter_contradictions に直接渡す（embeddingは否定を区別できない）
+        検査結果 → update_from_results に渡す
+
+        Returns: (positive_text: str, negative_findings: list[str], result_lines: list[str])
         """
         lines = [l.strip() for l in text.split('\n') if l.strip()]
         if not lines:
-            return "", []
+            return "", [], []
 
         return self._split_with_llm(text, lines)
 
     def _split_with_llm(self, full_text: str, lines: list) -> tuple:
-        """LLMでテキストを症状と検査結果に分離"""
-        prompt = f"""以下の臨床テキストを「症状・所見」と「検査結果」に分離してください。
+        """LLMでテキストを陽性症状・陰性所見・検査結果に3分離"""
+        prompt = f"""以下の臨床テキストを3つのカテゴリに分離してください。
+
+カテゴリ定義:
+1. positive_findings: 陽性の症状・所見（存在する所見）
+   - 主訴、現病歴、既往歴、バイタルサイン、陽性の身体所見
+   - 例: 「発熱38度」「頭痛あり」「心窩部圧痛」「体温37.5℃」
+2. negative_findings: 陰性の所見（否定された所見）
+   - 「〜なし」「〜陰性」「〜認めず」「〜否定」「正常」等
+   - 例: 「項部硬直なし」「Kernig徴候陰性」「Murphy徴候陰性」「発疹認めず」
+3. results: 検査結果（血液検査、画像検査、生理検査の数値・結果）
+   - 例: 「WBC 12000」「CRP 8.5」「胸部X線：浸潤影あり」
 
 ルール:
-- 主訴、現病歴、既往歴、バイタルサイン、身体所見 → symptoms
-- 血液検査、画像検査、生理検査の結果 → results
-- 判断に迷う場合はsymptomsに含める
+- バイタルサインの数値（体温、血圧、脈拍、SpO2等）→ positive_findings
+- 判断に迷う場合はpositive_findingsに含める
+- negative_findingsは個別の所見を文字列リストで返す
 
 出力形式（JSON）:
-{{"symptoms": "症状テキスト（改行区切り）", "results": ["検査結果1", "検査結果2", ...]}}
+{{"positive_findings": "陽性テキスト（改行区切り）", "negative_findings": ["陰性所見1", "陰性所見2", ...], "results": ["検査結果1", "検査結果2", ...]}}
 
 テキスト:
 {full_text}"""
@@ -1106,21 +1202,24 @@ class VeSMedEngine:
             end = content.rfind("}") + 1
             if start >= 0 and end > start:
                 parsed = json.loads(content[start:end])
-                symptoms = parsed.get("symptoms", "")
+                positive = parsed.get("positive_findings", parsed.get("symptoms", ""))
+                negatives = parsed.get("negative_findings", [])
                 results = parsed.get("results", [])
                 if isinstance(results, str):
                     results = [r.strip() for r in results.split('\n') if r.strip()]
-                print(f"  [分離LLM] 症状{len(symptoms)}字, 検査結果{len(results)}件")
-                return symptoms, results
+                if isinstance(negatives, str):
+                    negatives = [n.strip() for n in negatives.split('\n') if n.strip()]
+                print(f"  [分離LLM] 陽性{len(positive)}字, 陰性{len(negatives)}件, 検査結果{len(results)}件")
+                return positive, negatives, results
         except Exception as e:
             print(f"  [分離LLM] 失敗、embedding分離にフォールバック: {e}")
 
         return self._split_with_embedding(lines)
 
     def _split_with_embedding(self, lines: list) -> tuple:
-        """Embeddingベースで検査結果行を検出（LLM不要）"""
+        """Embeddingベースで検査結果行を検出（LLM不要、陰性分離なし）"""
         if not lines or self.test_name_embs is None:
-            return '\n'.join(lines), []
+            return '\n'.join(lines), [], []
 
         # 全行をembed
         try:
@@ -1133,7 +1232,7 @@ class VeSMedEngine:
             norms[norms == 0] = 1.0
             line_embs = line_embs / norms
         except Exception:
-            return '\n'.join(lines), []
+            return '\n'.join(lines), [], []
 
         # 各行の検査名との最大cos → 閾値で分離
         sims = line_embs @ self.test_name_embs.T  # (N_lines, N_tests)
@@ -1152,7 +1251,8 @@ class VeSMedEngine:
                 symptoms.append(line)
 
         print(f"  [分離Emb] 症状{len(symptoms)}行, 検査結果{len(results)}件")
-        return '\n'.join(symptoms), results
+        # embeddingフォールバックでは陰性分離不可（空リスト）
+        return '\n'.join(symptoms), [], results
 
     # ----------------------------------------------------------------
     # Step 1: Novelty計算（v2: LLM二値判定 + embeddingフォールバック）
@@ -1324,7 +1424,8 @@ class VeSMedEngine:
     # ----------------------------------------------------------------
     # Step 3.5: LLM論理フィルタ（v2: 矛盾疾患を除外）
     # ----------------------------------------------------------------
-    def filter_contradictions(self, candidates: list, patient_text: str) -> list:
+    def filter_contradictions(self, candidates: list, patient_text: str,
+                             negative_findings: list = None) -> tuple:
         """
         v2哲学: 判断はLLM。
 
@@ -1335,10 +1436,26 @@ class VeSMedEngine:
 
         LLMが論理矛盾を検出し、候補から除外する。
         embedding（知覚）の出力をLLM（判断）がフィルタする接着層。
+
+        negative_findings: 陰性所見リスト（split_symptoms_resultsで分離された否定所見）。
+        これにより「項部硬直なし」→ 髄膜炎除外 等がより確実に機能する。
+
+        Returns: (filtered_candidates, exclusion_reasons)
+          exclusion_reasons: [{"disease_name": str, "reason": str}, ...]
         """
         # 上位20疾患をLLMに提示
         top_n = min(20, len(candidates))
         disease_list = [f"- {c['disease_name']}" for c in candidates[:top_n]]
+
+        # 陰性所見セクション
+        neg_section = ""
+        if negative_findings:
+            neg_list = "\n".join(f"- {nf}" for nf in negative_findings)
+            neg_section = f"""
+【重要: 以下の陰性所見が確認されています】
+{neg_list}
+これらの陰性所見と矛盾する疾患を特に注意して確認してください。
+"""
 
         prompt = f"""以下の患者テキストと候補疾患リストを見て、
 患者テキストの内容と**論理的に矛盾する**疾患を指摘してください。
@@ -1353,14 +1470,15 @@ class VeSMedEngine:
 
 患者テキスト:
 {patient_text}
-
+{neg_section}
 候補疾患:
 {chr(10).join(disease_list)}
 
-出力（JSON配列）:
-["疾患名1", "疾患名2", ...]
+出力（JSON配列、各要素に疾患名と除外理由を含む）:
+[{{"disease": "疾患名1", "reason": "除外理由1"}}, ...]
 矛盾なしなら空配列 []"""
 
+        exclusion_reasons = []
         try:
             content = self._llm_call([
                 {"role": "system", "content": "JSON配列のみ出力。説明不要。"},
@@ -1369,28 +1487,69 @@ class VeSMedEngine:
             start = content.find("[")
             end = content.rfind("]") + 1
             if start >= 0 and end > start:
-                contradictions = json.loads(content[start:end])
-                if contradictions:
-                    contra_set = set(contradictions)
+                parsed = json.loads(content[start:end])
+                if parsed:
+                    # 新形式（{disease, reason}）と旧形式（文字列）の両方に対応
+                    contra_set = set()
+                    for item in parsed:
+                        if isinstance(item, dict):
+                            dname = item.get("disease", "")
+                            reason = item.get("reason", "")
+                            contra_set.add(dname)
+                            exclusion_reasons.append({
+                                "disease_name": dname,
+                                "reason": reason,
+                            })
+                        elif isinstance(item, str):
+                            contra_set.add(item)
+                            exclusion_reasons.append({
+                                "disease_name": item,
+                                "reason": "",
+                            })
                     filtered = [c for c in candidates if c["disease_name"] not in contra_set]
                     n_removed = len(candidates) - len(filtered)
                     if n_removed > 0:
-                        print(f"  [LLMフィルタ] {n_removed}疾患除外: {contradictions}")
-                        return filtered
+                        names = [r["disease_name"] for r in exclusion_reasons]
+                        print(f"  [LLMフィルタ] {n_removed}疾患除外: {names}")
+                        return filtered, exclusion_reasons
         except Exception as e:
             print(f"  [LLMフィルタ] 失敗（スキップ）: {e}")
 
-        return candidates
+        return candidates, []
 
     # ----------------------------------------------------------------
     # Step 4: 検査ランキング（prior加重分散）
     # ----------------------------------------------------------------
+    def _compute_invasive_penalty(self, candidates: list, w: np.ndarray) -> np.ndarray:
+        """
+        動的侵襲性バランシング: 候補群の重症度に応じた侵襲ペナルティを計算。
+
+        expected_criticality = Σ(w_i × cos_critical_i)  — 候補群の加重平均critical度
+        penalty_j = max(0, cos_invasive_j - expected_criticality)
+
+        返り値: exp(-penalty) (N_tests,) — utilityに乗算する
+        """
+        n_tests = len(self.test_names)
+        if self.cos_invasive is None or len(self.cos_invasive) != n_tests:
+            return np.ones(n_tests)
+
+        # expected_criticality: 候補疾患群の加重平均critical度
+        critical_scores = np.array([
+            self.disease_2c.get(c["disease_name"], {}).get("critical", 0.0)
+            for c in candidates
+        ], dtype=float)
+        expected_criticality = float(np.dot(w, critical_scores))
+
+        # penalty_j = max(0, cos_invasive_j - expected_criticality)
+        penalty = np.maximum(0.0, self.cos_invasive - expected_criticality)
+        return np.exp(-penalty)
+
     def rank_tests(self, candidates: list, novelty: np.ndarray = None) -> list:
         """
         各検査について、疑い疾患群に対するcos類似度のprior加重分散を計算。
         分散が大きい = 疾患間でバラつく = 鑑別に有用な検査。
 
-        utility = variance × novelty
+        utility = variance × novelty × invasive_discount
 
         novelty: v2二値判定（実施済み=0, 未実施=1）。
         """
@@ -1438,6 +1597,9 @@ class VeSMedEngine:
             if pe_norm > 0:
                 patient_emb = pe / pe_norm
 
+        # 動的侵襲性バランシング
+        invasive_discount = self._compute_invasive_penalty(candidates, w)
+
         # 関連疾患: 各検査で重みが高い上位疾患を抽出
         # weighted_sim_sub = w * sim_sub (各疾患の検査への寄与度)
         weighted_contrib = w_col * sim_sub  # (N_candidates, N_tests)
@@ -1446,7 +1608,8 @@ class VeSMedEngine:
         for j, tname in enumerate(self.test_names):
             score = float(var[j])
             nov = float(novelty[j])
-            utility = score * nov
+            inv_disc = float(invasive_discount[j])
+            utility = score * nov * inv_disc
 
             # 関連疾患Top5（重み付き寄与度順）
             contribs = weighted_contrib[:, j]
@@ -1457,7 +1620,6 @@ class VeSMedEngine:
                 for k in top_idx if contribs[k] > 0
             ]
 
-            tdata = self.test_db.get(tname, {})
             ranked.append({
                 "test_name": tname,
                 "score": round(score, 6),
@@ -1526,6 +1688,9 @@ class VeSMedEngine:
             if pe_norm > 0:
                 patient_emb = pe / pe_norm
 
+        # 動的侵襲性バランシング
+        invasive_discount = self._compute_invasive_penalty(candidates, w)
+
         # 関連疾患
         weighted_contrib = w_col * sim_sub
 
@@ -1533,7 +1698,8 @@ class VeSMedEngine:
         for j, tname in enumerate(self.test_names):
             score = float(confirm[j])
             nov = float(novelty[j])
-            utility = score * nov
+            inv_disc = float(invasive_discount[j])
+            utility = score * nov * inv_disc
 
             # 関連疾患Top5
             contribs = weighted_contrib[:, j]
@@ -1609,11 +1775,25 @@ class VeSMedEngine:
             if pe_norm > 0:
                 patient_emb = pe / pe_norm
 
+        # 動的侵襲性バランシング（Part Bは局所重み×2C重みで計算）
+        raw_sims_b = np.array([c.get("similarity", 0.0) for c in candidates], dtype=float)
+        weights_b = np.array([
+            self.disease_2c.get(c["disease_name"], {}).get("weight", 1.0)
+            for c in candidates
+        ], dtype=float)
+        sim_centered_b = np.maximum(0.0, raw_sims_b - raw_sims_b.mean())
+        w_b = sim_centered_b * weights_b
+        w_b_sum = w_b.sum()
+        if w_b_sum > 0:
+            w_b = w_b / w_b_sum
+        invasive_discount = self._compute_invasive_penalty(candidates, w_b)
+
         ranked = []
         for j, tname in enumerate(self.test_names):
             ch = float(critical_scores[j])
             nov = float(novelty[j])
-            utility = ch * nov
+            inv_disc = float(invasive_discount[j])
+            utility = ch * nov * inv_disc
 
             # 最大命中疾患
             bi = int(best_disease_idx[j])
@@ -1897,6 +2077,100 @@ class VeSMedEngine:
             hpe_names=np.array(self.hpe_names, dtype=object),
         )
         print(f"[HPE NameEmb] {self.hpe_name_embs.shape[0]}件計算・キャッシュ完了")
+
+    def compute_all_novelty(self, patient_text: str) -> tuple:
+        """
+        統合LLMコール: 検査novelty + HPE novelty + HPE所見抽出を1回で実行。
+        3つの個別LLMコールを1つに統合し、APIコスト・レイテンシを削減。
+
+        Returns: (novelty_tests: ndarray, novelty_hpe: ndarray, hpe_findings: list)
+        """
+        n_tests = len(self.test_names)
+        n_hpe = len(self.hpe_names)
+
+        # LLM統合プロンプト
+        test_list_json = json.dumps(self.test_names, ensure_ascii=False)
+        hpe_list_json = json.dumps(self.hpe_names, ensure_ascii=False)
+
+        prompt = f"""以下の臨床テキストを読み、3つのタスクを同時に実行してください。
+
+【タスク1: 実施済み検査の特定】
+すでに実施済み、または患者の現在の状態から「明らかに評価済み」と言える検査を特定。
+- 文字列の一致ではなく「医学的な論理包含」でマッピング
+- 例: 「体温37.5℃」→「バイタルサイン測定」(※マスタに存在する場合のみ)
+- 出力は必ずマスタに存在する正確な名称のみ
+
+【タスク2: 聴取済みHPE項目の特定】
+すでに聴取済み・確認済みの問診項目・身体診察所見を特定。
+- 患者が自発的に述べた症状も「聴取済み」に含める
+- 陰性所見（「〜なし」等）も聴取済み
+- 出力は必ずマスタに存在する正確な名称のみ
+
+【タスク3: HPE所見の極性判定】
+タスク2で特定した項目について、陽性(+1)か陰性(-1)かを判定。
+- 「発熱」「腹痛あり」→ +1
+- 「肝疾患なし」「Murphy徴候陰性」→ -1
+
+【臨床テキスト】
+{patient_text}
+
+【検査マスタ（全{n_tests}件）】
+{test_list_json}
+
+【HPEマスタ（全{n_hpe}件）】
+{hpe_list_json}
+
+出力（JSON）:
+{{"done_tests": ["検査名1", ...], "hpe_findings": [{{"item": "項目名", "polarity": 1}}, ...]}}
+※ hpe_findingsには聴取済み項目を全て含め、各項目にpolarityを付与"""
+
+        try:
+            content = self._llm_call([
+                {"role": "system", "content": "JSON出力のみ。説明不要。"},
+                {"role": "user", "content": prompt},
+            ])
+            start = content.find("{")
+            end = content.rfind("}") + 1
+            if start >= 0 and end > start:
+                parsed = json.loads(content[start:end])
+
+                # タスク1: 検査novelty
+                novelty_tests = np.ones(n_tests)
+                done_tests = parsed.get("done_tests", [])
+                matched_tests = 0
+                for dt in done_tests:
+                    if dt in self.test_idx:
+                        novelty_tests[self.test_idx[dt]] = 0.0
+                        matched_tests += 1
+
+                # タスク2+3: HPE novelty + 所見
+                novelty_hpe = np.ones(n_hpe)
+                hpe_findings = []
+                for entry in parsed.get("hpe_findings", []):
+                    name = entry.get("item", "")
+                    pol = entry.get("polarity", 1)
+                    if name in self.hpe_idx:
+                        idx = self.hpe_idx[name]
+                        novelty_hpe[idx] = 0.0
+                        hpe_findings.append({
+                            "item": name,
+                            "index": idx,
+                            "polarity": 1 if pol > 0 else -1,
+                        })
+
+                n_pos = sum(1 for f in hpe_findings if f["polarity"] > 0)
+                n_neg = sum(1 for f in hpe_findings if f["polarity"] < 0)
+                print(f"  [統合Novelty] 検査: {len(done_tests)}件抽出/{matched_tests}件マッチ, "
+                      f"HPE: {len(hpe_findings)}項目(陽性{n_pos}, 陰性{n_neg})")
+                return novelty_tests, novelty_hpe, hpe_findings
+        except Exception as e:
+            print(f"  [統合Novelty] 失敗、個別コールにフォールバック: {e}")
+
+        # フォールバック: 個別コール
+        novelty_tests = self.compute_novelty(patient_text)
+        novelty_hpe = self.compute_novelty_hpe(patient_text)
+        hpe_findings = self.extract_hpe_findings(patient_text)
+        return novelty_tests, novelty_hpe, hpe_findings
 
     def extract_hpe_findings(self, patient_text: str) -> list:
         """

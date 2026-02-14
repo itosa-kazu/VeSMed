@@ -46,67 +46,55 @@ def analyze_patient(input_text):
     if not input_text.strip():
         return (
             "テキストを入力してください。",
-            None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None,
         )
 
     eng = init_engine()
 
     t0 = _time.time()
 
-    # Step 0: 症状と検査結果を自動分離（LLM）
-    symptoms_text, result_lines = eng.split_symptoms_results(input_text)
+    # Step 0: 症状と検査結果を自動分離（LLM、3分類）
+    positive_text, negative_findings, result_lines = eng.split_symptoms_results(input_text)
     t_split = _time.time()
     print(f"[TIMING] split: {t_split-t0:.1f}s")
 
-    if not symptoms_text.strip():
-        symptoms_text = input_text
+    if not positive_text.strip():
+        positive_text = input_text
 
-    # Step 1: 疾患検索（embedding — 知覚）
-    candidates = eng.search_diseases(symptoms_text)
+    # Step 1: 疾患検索（embedding — 知覚、陽性所見のみ）
+    candidates = eng.search_diseases(positive_text)
     t1 = _time.time()
     print(f"[TIMING] search_diseases: {t1-t_split:.1f}s")
 
     candidates = eng.compute_priors(candidates)
 
-    # Step 2: 並行処理（LLMフィルタ, 検査結果更新, novelty, HPE抽出）
+    # Step 2: 並行処理（LLMフィルタ, 検査結果更新, 統合novelty）
     full_text = input_text
 
     import copy
     cands_copy = copy.deepcopy(candidates)
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        # LLM論理フィルタ: 矛盾疾患を除外
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        # LLM論理フィルタ: 矛盾疾患を除外（陰性所見も渡す）
         fut_filter = executor.submit(
-            eng.filter_contradictions, candidates, full_text,
+            eng.filter_contradictions, candidates, full_text, negative_findings,
         )
 
         # 検査結果更新
         fut_update = executor.submit(
             eng.update_from_results, cands_copy, result_lines,
-            symptoms_text,
+            positive_text,
         ) if result_lines else None
 
-        # Novelty: LLM二値判定
-        fut_novelty = executor.submit(
-            eng.compute_novelty, full_text,
-        )
-
-        # HPE所見抽出
-        fut_hpe_extract = executor.submit(
-            eng.extract_hpe_findings, full_text,
-        )
-
-        # HPE Novelty: LLM二値判定
-        fut_novelty_hpe = executor.submit(
-            eng.compute_novelty_hpe, full_text,
+        # 統合Novelty: 検査novelty + HPE novelty + HPE所見抽出を1 LLMコールで
+        fut_all_novelty = executor.submit(
+            eng.compute_all_novelty, full_text,
         )
 
         # 結果回収
-        novelty = fut_novelty.result()
-        hpe_findings = fut_hpe_extract.result()
-        novelty_hpe_base = fut_novelty_hpe.result()
+        novelty, novelty_hpe, hpe_findings = fut_all_novelty.result()
 
-        filtered_candidates = fut_filter.result()
+        filtered_candidates, exclusion_reasons = fut_filter.result()
 
         # 検査結果更新（フィルタ前のcopyで更新し、フィルタ後に反映）
         if fut_update:
@@ -118,12 +106,9 @@ def analyze_patient(input_text):
 
     candidates = filtered_candidates
 
-    # HPE所見でnovelty上書き + 疾患重み更新
+    # HPE所見で疾患重み更新
     if hpe_findings:
-        for f in hpe_findings:
-            novelty_hpe_base[f["index"]] = 0.0
         candidates = eng.update_from_hpe(candidates, hpe_findings)
-    novelty_hpe = novelty_hpe_base
 
     t2 = _time.time()
     print(f"[TIMING] parallel: {t2-t1:.1f}s")
@@ -141,7 +126,14 @@ def analyze_patient(input_text):
     n_total = len(eng.disease_db)
     n_filtered = n_total - len(candidates)
     filter_info = f" / {n_filtered}疾患除外" if n_filtered > 0 else ""
-    status = f"分析完了 / {len(candidates)}疾患{filter_info} / 検査結果{n_results}件"
+    neg_info = f" / 陰性所見{len(negative_findings)}件" if negative_findings else ""
+    status = f"分析完了 / {len(candidates)}疾患{filter_info}{neg_info} / 検査結果{n_results}件"
+
+    # 除外疾患テーブル
+    excluded_df = format_exclusion_df(exclusion_reasons)
+
+    # 抑制検査テーブル（novelty=0の検査）
+    suppressed_df = format_suppressed_df(eng.test_names, novelty)
 
     return (
         status,
@@ -151,6 +143,8 @@ def analyze_patient(input_text):
         format_confirm_df(confirm_tests),
         format_hpe_df(ranked_hpe, "Hx"),
         format_hpe_df(ranked_hpe, "PE"),
+        excluded_df,
+        suppressed_df,
     )
 
 
@@ -158,7 +152,7 @@ def reset_session():
     return (
         "",
         "リセットしました。",
-        None, None, None, None, None, None,
+        None, None, None, None, None, None, None, None,
     )
 
 
@@ -251,6 +245,34 @@ def format_hpe_df(ranked_hpe, category_filter):
     return pd.DataFrame(rows)
 
 
+def format_exclusion_df(exclusion_reasons):
+    """除外された疾患のDataFrame"""
+    if not exclusion_reasons:
+        return pd.DataFrame(columns=["疾患名", "除外理由"])
+    rows = []
+    for r in exclusion_reasons:
+        rows.append({
+            "疾患名": r["disease_name"],
+            "除外理由": r.get("reason", ""),
+        })
+    return pd.DataFrame(rows)
+
+
+def format_suppressed_df(test_names, novelty):
+    """novelty=0で抑制された検査のDataFrame"""
+    import numpy as np
+    rows = []
+    for j, tname in enumerate(test_names):
+        if j < len(novelty) and novelty[j] == 0.0:
+            rows.append({
+                "検査名": tname,
+                "理由": "患者テキストから実施済みと判定",
+            })
+    if not rows:
+        return pd.DataFrame(columns=["検査名", "理由"])
+    return pd.DataFrame(rows)
+
+
 # ----------------------------------------------------------------
 # Gradio UI
 # ----------------------------------------------------------------
@@ -324,10 +346,27 @@ with gr.Blocks(
                 interactive=False,
             )
 
+    # ===== 除外・抑制情報（折りたたみ） =====
+    gr.Markdown("---")
+    with gr.Accordion("除外された疾患・抑制された検査", open=False):
+        with gr.Row():
+            with gr.Column(scale=1):
+                excluded_table = gr.Dataframe(
+                    label="除外疾患（LLMフィルタによる論理矛盾）",
+                    headers=["疾患名", "除外理由"],
+                    interactive=False,
+                )
+            with gr.Column(scale=1):
+                suppressed_table = gr.Dataframe(
+                    label="抑制検査（実施済みと判定）",
+                    headers=["検査名", "理由"],
+                    interactive=False,
+                )
+
     # ===== イベント =====
 
     outputs = [status_text, disease_table, test_table, critical_table, confirm_table,
-               hpe_hx_table, hpe_pe_table]
+               hpe_hx_table, hpe_pe_table, excluded_table, suppressed_table]
 
     analyze_btn.click(
         fn=analyze_patient,
