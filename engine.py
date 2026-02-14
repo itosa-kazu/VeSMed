@@ -1172,28 +1172,28 @@ class VeSMedEngine:
         return self._compute_novelty_llm(patient_text)
 
     def _compute_novelty_llm(self, patient_text: str) -> np.ndarray:
-        """LLMに既実施検査を抽出させて二値noveltyを返す"""
+        """LLMに既実施検査を抽出させて二値noveltyを返す（全件提示方式）"""
         n_tests = len(self.test_names)
         novelty = np.ones(n_tests)
 
-        # サンプル検査名（LLMに全リストは送れないので代表的なものを提示）
-        sample_names = self.test_names[:80]
-        sample_text = json.dumps(sample_names, ensure_ascii=False)
+        # 全372件をLLMに提示（Geminiのコンテキストなら余裕）
+        test_list_json = json.dumps(self.test_names, ensure_ascii=False)
 
-        prompt = f"""以下の臨床テキストから、既に実施済み・結果が判明している検査を全て列挙してください。
+        prompt = f"""以下の臨床テキストを読み、すでに実施済み、または患者の現在の状態から「明らかに評価済み」と言える検査を特定してください。
 
-ルール:
-- 検査名は下記リストから選ぶか、テキスト中の検査名をそのまま使う
-- 「WBC 15000」→「白血球数」、「CRP 8.5」→「CRP」のように正規化
-- 「心電図ST変化なし」→「12誘導心電図」、「胸部X線異常なし」→「胸部X線」
-- 「CBC」→「白血球数」「赤血球数」「ヘモグロビン」「血小板数」に展開
-- 結果の陽性/陰性は問わず、実施されたものを全て列挙
+【推論ルール】
+1. 文字列の一致ではなく「医学的な論理包含」でマッピングすること。
+   - 例: 「体温37.5℃、血圧120/80、SpO2 98%」→「バイタルサイン測定」
+   - 例: 「WBC 8500、Hb 12.0、Plt 20万」→「白血球数」「ヘモグロビン」「血小板数」
+   - 例: 「心音異常なし」→ 聴診は実施されているが、これは検査ではなく身体所見
+2. 出力は必ず下記マスタに存在する正確な名称のみ使用すること。マスタにない名称は出力しないこと。
+3. 結果の陽性/陰性は問わない。実施されたものを全て列挙。
 
-臨床テキスト:
+【臨床テキスト】
 {patient_text}
 
-検査名リスト（参考）:
-{sample_text}
+【VeSMed検査マスタ（全{n_tests}件）】
+{test_list_json}
 
 出力: JSON配列 ["検査名1", "検査名2", ...]"""
 
@@ -1208,17 +1208,9 @@ class VeSMedEngine:
                 done_tests = json.loads(content[start:end])
                 matched = 0
                 for dt in done_tests:
-                    # 完全一致
                     if dt in self.test_idx:
                         novelty[self.test_idx[dt]] = 0.0
                         matched += 1
-                        continue
-                    # 部分一致
-                    for tname, tidx in self.test_idx.items():
-                        if dt in tname or tname in dt:
-                            novelty[tidx] = 0.0
-                            matched += 1
-                            break
                 print(f"  [Novelty LLM] {len(done_tests)}件抽出, {matched}件マッチ → 二値化")
                 return novelty
         except Exception as e:
@@ -2016,27 +2008,30 @@ class VeSMedEngine:
         return novelty
 
     def _compute_novelty_hpe_llm(self, patient_text: str) -> np.ndarray:
-        """LLMに既聴取の問診・身体診察項目を抽出させる"""
+        """LLMに既聴取の問診・身体診察項目を抽出させる（全件提示方式）"""
         n_hpe = len(self.hpe_names)
         novelty = np.ones(n_hpe)
 
-        sample_names = self.hpe_names[:80]
-        sample_text = json.dumps(sample_names, ensure_ascii=False)
+        # 全274件をLLMに提示
+        hpe_list_json = json.dumps(self.hpe_names, ensure_ascii=False)
 
-        prompt = f"""以下の臨床テキストから、既に聴取済み・確認済みの問診項目・身体診察所見を全て列挙してください。
+        prompt = f"""以下の臨床テキストを読み、すでに聴取済み・確認済みの問診項目・身体診察所見を特定してください。
 
-ルール:
-- 患者が自発的に述べた症状も「聴取済み」に含める
-- 「右下腹部痛を主訴に」→ 「右下腹部痛」は聴取済み
-- 「発熱38度」→ 「発熱」は聴取済み
-- 「嘔気あり」→ 「嘔気・嘔吐」は聴取済み
-- 身体所見の記載があればそれも含める
+【推論ルール】
+1. 文字列の一致ではなく「医学的な論理包含」でマッピングすること。
+   - 例: 患者が「2日前から腹痛」と述べている → 「腹痛」は聴取済み
+   - 例: 「発熱38度」→ 「発熱」は聴取済み
+   - 例: 「嘔気あり」→ 「嘔気・嘔吐」は聴取済み
+   - 例: 「発疹なし」→ 「発疹・皮疹」は聴取済み（陰性所見も聴取済み）
+   - 例: 「ショック所見あり」→ 「ショック徴候」は聴取済み
+2. 患者が自発的に述べた症状も「聴取済み」に含める。
+3. 出力は必ず下記マスタに存在する正確な名称のみ使用すること。マスタにない名称は出力しないこと。
 
-臨床テキスト:
+【臨床テキスト】
 {patient_text}
 
-項目リスト（参考）:
-{sample_text}
+【VeSMed問診・身体診察マスタ（全{n_hpe}件）】
+{hpe_list_json}
 
 出力: JSON配列 ["項目名1", "項目名2", ...]"""
 
@@ -2050,12 +2045,12 @@ class VeSMedEngine:
             if start >= 0 and end > start:
                 done_items = json.loads(content[start:end])
                 matched = 0
+                hpe_set = set(self.hpe_names)
+                hpe_idx = {name: k for k, name in enumerate(self.hpe_names)}
                 for di in done_items:
-                    for k, name in enumerate(self.hpe_names):
-                        if di == name or di in name or name in di:
-                            novelty[k] = 0.0
-                            matched += 1
-                            break
+                    if di in hpe_idx:
+                        novelty[hpe_idx[di]] = 0.0
+                        matched += 1
                 print(f"  [HPE Novelty LLM] {len(done_items)}件抽出, {matched}件マッチ → 二値化")
                 return novelty
         except Exception as e:
