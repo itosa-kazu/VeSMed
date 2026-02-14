@@ -257,20 +257,28 @@ class VeSMedEngine:
         self.disease_embs_normed = disease_embs / d_norms
         print(f"[疾患Emb] {self.disease_embs_normed.shape[0]}疾患の正規化embedding保持")
 
+        # 仮説テキスト構築: カスタム仮説テキスト or "検査名 異常"
+        hypothesis_texts = []
+        for tname in self.test_names:
+            custom = self.test_db.get(tname, {}).get("hypothesis_text")
+            hypothesis_texts.append(custom if custom else f"{tname} 異常")
+
+        # 仮説テキストのハッシュ（内容変更検知）
+        import hashlib
+        h_hash = hashlib.md5("||".join(hypothesis_texts).encode()).hexdigest()[:12]
+
         # キャッシュチェック
         if os.path.exists(cache_file):
             data = np.load(cache_file, allow_pickle=True)
             cached_diseases = list(data["disease_names"])
             cached_tests = list(data["test_names"])
-            # 仮説方式のキャッシュかどうかも確認
             is_hypothesis = bool(data.get("hypothesis_mode", False))
-            if cached_diseases == disease_names and cached_tests == self.test_names and is_hypothesis:
+            cached_hash = str(data["hypothesis_hash"]) if "hypothesis_hash" in data else ""
+            if (cached_diseases == disease_names and cached_tests == self.test_names
+                    and is_hypothesis and cached_hash == h_hash):
                 self.sim_matrix = data["sim_matrix"]
                 print(f"[sim_matrix] 仮説方式キャッシュから読込 {self.sim_matrix.shape}")
                 return
-
-        # 仮説embedding: "検査名 異常" × N_tests
-        hypothesis_texts = [f"{tname} 異常" for tname in self.test_names]
         hypothesis_embs = self._batch_embed(hypothesis_texts)
         if hypothesis_embs is None:
             print("[sim_matrix] 仮説embedding失敗")
@@ -290,6 +298,7 @@ class VeSMedEngine:
             disease_names=np.array(disease_names, dtype=object),
             test_names=np.array(self.test_names, dtype=object),
             hypothesis_mode=np.array(True),
+            hypothesis_hash=np.array(h_hash),
         )
         print(f"[sim_matrix] 仮説方式 {self.sim_matrix.shape} 計算・キャッシュ完了")
 
@@ -1063,6 +1072,96 @@ class VeSMedEngine:
             raise RuntimeError(f"全APIが失敗しました: {e}")
 
     # ----------------------------------------------------------------
+    # テキスト自動分離: 症状/所見 vs 検査結果
+    # ----------------------------------------------------------------
+    def split_symptoms_results(self, text: str, mode: str = "llm") -> tuple:
+        """
+        自由記述テキストを「症状・所見」と「検査結果」に自動分離。
+
+        Returns: (symptoms_text: str, result_lines: list[str])
+        """
+        lines = [l.strip() for l in text.split('\n') if l.strip()]
+        if not lines:
+            return "", []
+
+        if mode == "llm":
+            return self._split_with_llm(text, lines)
+
+        return self._split_with_embedding(lines)
+
+    def _split_with_llm(self, full_text: str, lines: list) -> tuple:
+        """LLMでテキストを症状と検査結果に分離"""
+        prompt = f"""以下の臨床テキストを「症状・所見」と「検査結果」に分離してください。
+
+ルール:
+- 主訴、現病歴、既往歴、バイタルサイン、身体所見 → symptoms
+- 血液検査、画像検査、生理検査の結果 → results
+- 判断に迷う場合はsymptomsに含める
+
+出力形式（JSON）:
+{{"symptoms": "症状テキスト（改行区切り）", "results": ["検査結果1", "検査結果2", ...]}}
+
+テキスト:
+{full_text}"""
+
+        try:
+            content = self._llm_call([
+                {"role": "system", "content": "JSON出力のみ。説明不要。"},
+                {"role": "user", "content": prompt},
+            ])
+            start = content.find("{")
+            end = content.rfind("}") + 1
+            if start >= 0 and end > start:
+                parsed = json.loads(content[start:end])
+                symptoms = parsed.get("symptoms", "")
+                results = parsed.get("results", [])
+                if isinstance(results, str):
+                    results = [r.strip() for r in results.split('\n') if r.strip()]
+                print(f"  [分離LLM] 症状{len(symptoms)}字, 検査結果{len(results)}件")
+                return symptoms, results
+        except Exception as e:
+            print(f"  [分離LLM] 失敗、embedding分離にフォールバック: {e}")
+
+        return self._split_with_embedding(lines)
+
+    def _split_with_embedding(self, lines: list) -> tuple:
+        """Embeddingベースで検査結果行を検出（LLM不要）"""
+        if not lines or self.test_name_embs is None:
+            return '\n'.join(lines), []
+
+        # 全行をembed
+        try:
+            resp = self.embed_client.embeddings.create(
+                model=EMBEDDING_MODEL,
+                input=lines,
+            )
+            line_embs = np.array([d.embedding for d in resp.data], dtype=np.float32)
+            norms = np.linalg.norm(line_embs, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            line_embs = line_embs / norms
+        except Exception:
+            return '\n'.join(lines), []
+
+        # 各行の検査名との最大cos → 閾値で分離
+        sims = line_embs @ self.test_name_embs.T  # (N_lines, N_tests)
+        max_sims = sims.max(axis=1)  # (N_lines,)
+
+        # 極性も考慮: 検査結果は具体的な値を含むので極性が明確
+        has_polarity = np.abs(line_embs @ self.polarity_axis) > 0.03
+
+        symptoms = []
+        results = []
+        for i, line in enumerate(lines):
+            # 検査名に高い類似度 かつ 極性がある → 検査結果
+            if float(max_sims[i]) > 0.65 and has_polarity[i]:
+                results.append(line)
+            else:
+                symptoms.append(line)
+
+        print(f"  [分離Emb] 症状{len(symptoms)}行, 検査結果{len(results)}件")
+        return '\n'.join(symptoms), results
+
+    # ----------------------------------------------------------------
     # Step 1: Novelty計算（患者テキストに既に含まれる情報を連続的に割引）
     # ----------------------------------------------------------------
     def compute_novelty(self, patient_text: str) -> np.ndarray:
@@ -1224,16 +1323,8 @@ class VeSMedEngine:
         ranked = []
         for j, tname in enumerate(self.test_names):
             score = float(var[j])
-            q = self.test_quality.get(tname, {"axis": 0.0})
-            axis_proj = q["axis"]
             nov = float(novelty[j])
-            utility = score * math.exp(axis_proj) * nov
-
-            # risk_relevance: 侵襲的検査のリスクが患者状態と関連する場合にutilityを低下
-            risk_rel = 0.0
-            if patient_emb is not None and tname in self.risk_embs:
-                risk_rel = max(0.0, float(np.dot(self.risk_embs[tname], patient_emb)))
-                utility *= (1.0 - risk_rel)
+            utility = score * nov
 
             # 関連疾患Top5（重み付き寄与度順）
             contribs = weighted_contrib[:, j]
@@ -1248,10 +1339,7 @@ class VeSMedEngine:
             ranked.append({
                 "test_name": tname,
                 "score": round(score, 6),
-                "quality": round(axis_proj, 4),
                 "novelty": round(nov, 4),
-                "risk_relevance": round(risk_rel, 4),
-                "turnaround_minutes": tdata.get("turnaround_minutes", 60),
                 "utility": round(utility, 6),
                 "details": details,
             })
@@ -1322,16 +1410,8 @@ class VeSMedEngine:
         ranked = []
         for j, tname in enumerate(self.test_names):
             score = float(confirm[j])
-            q = self.test_quality.get(tname, {"axis": 0.0})
-            axis_proj = q["axis"]
             nov = float(novelty[j])
-            utility = score * math.exp(axis_proj) * nov
-
-            # risk_relevance
-            risk_rel = 0.0
-            if patient_emb is not None and tname in self.risk_embs:
-                risk_rel = max(0.0, float(np.dot(self.risk_embs[tname], patient_emb)))
-                utility *= (1.0 - risk_rel)
+            utility = score * nov
 
             # 関連疾患Top5
             contribs = weighted_contrib[:, j]
@@ -1345,9 +1425,7 @@ class VeSMedEngine:
             ranked.append({
                 "test_name": tname,
                 "confirm_score": round(score, 6),
-                "quality": round(axis_proj, 4),
                 "novelty": round(nov, 4),
-                "risk_relevance": round(risk_rel, 4),
                 "utility": round(utility, 6),
                 "details": details,
             })
@@ -1412,16 +1490,8 @@ class VeSMedEngine:
         ranked = []
         for j, tname in enumerate(self.test_names):
             ch = float(critical_scores[j])
-            q = self.test_quality.get(tname, {"axis": 0.0})
-            axis_proj = q["axis"]
             nov = float(novelty[j])
-            utility = ch * math.exp(axis_proj) * nov
-
-            # risk_relevance
-            risk_rel = 0.0
-            if patient_emb is not None and tname in self.risk_embs:
-                risk_rel = max(0.0, float(np.dot(self.risk_embs[tname], patient_emb)))
-                utility *= (1.0 - risk_rel)
+            utility = ch * nov
 
             # 最大命中疾患
             bi = int(best_disease_idx[j])
@@ -1430,7 +1500,6 @@ class VeSMedEngine:
             ranked.append({
                 "test_name": tname,
                 "critical_hit": round(ch, 6),
-                "quality": round(axis_proj, 4),
                 "novelty": round(nov, 4),
                 "utility": round(utility, 6),
                 "hit_disease": hit_disease,

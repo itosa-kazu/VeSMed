@@ -843,6 +843,136 @@ SECTION_TITLES = [
 
 
 # ----------------------------------------------------------------
+# 検査 findings_description V3 プロンプト（6セクション並列生成）
+# sim_matrixの検査側を強化：疾患記述と語彙が重なるよう設計
+# ----------------------------------------------------------------
+
+TEST_SECTION_PROMPTS = [
+    # Section 1: 適応臨床像
+    """\
+あなたは日本の臨床医学に精通した専門家です。
+与えられた検査について、「適応臨床像」のみを詳細に記述してください。
+出力はプレーンテキストのみ（JSON不要、マークダウン不要、コードブロック不要、見出し記号不要）。
+
+この検査をオーダーすべき患者像を、来院時の所見で記述する。
+「〜を主訴に来院した患者」「〜を呈する患者において実施する」の形式。
+
+記述内容:
+- 主訴と症状パターン（この検査をオーダーする契機となる訴え全パターン）
+- バイタルサイン異常（発熱、頻脈、低血圧、頻呼吸、SpO2低下等、該当するもの全て）
+- 身体所見（視診・触診・聴診で認める所見のうち、この検査のオーダー根拠となるもの）
+- 救急・緊急で必要な場合と、外来・スクリーニングで必要な場合を分けて記述
+- 年齢層・性別・基礎疾患による適応の違い
+- 省略しない。この検査をオーダーする全ての臨床場面を網羅する""",
+
+    # Section 2: 疾患別異常パターン（主要群）
+    """\
+あなたは日本の臨床医学に精通した専門家です。
+与えられた検査について、「疾患別の異常パターン（主要疾患群）」のみを詳細に記述してください。
+出力はプレーンテキストのみ（JSON不要、マークダウン不要、コードブロック不要、見出し記号不要）。
+
+この検査が臨床的に重要な役割を果たす主要疾患（15〜20件）について、
+各疾患ごとに具体的な検査所見パターンを記述する。
+
+記述ルール:
+- 疾患名は正式名称を使用
+- 検査値の方向（上昇/低下/陽性/陰性）と程度（具体的数値・倍率）を必ず含める
+- 「基準値の○倍以上」「○○以上/以下」等の数値目安を明記
+- 各疾患でこの検査結果がどの程度特異的かを記述（この所見があればほぼ確定、vs 非特異的）
+- 同じ疾患内でも病型・病期・重症度による検査値の違いがあれば全て記述
+- 省略しない。知っている疾患別パターンを全部書く""",
+
+    # Section 3: 疾患別異常パターン（追加群）
+    """\
+あなたは日本の臨床医学に精通した専門家です。
+与えられた検査について、「疾患別の異常パターン（追加疾患群）」のみを詳細に記述してください。
+出力はプレーンテキストのみ（JSON不要、マークダウン不要、コードブロック不要、見出し記号不要）。
+
+主要疾患（最も一般的な15-20疾患）以外で、この検査が異常を示す疾患を網羅的に記述する。
+
+対象:
+- 頻度は低いが見逃すと致命的な疾患
+- 特殊な集団（小児、高齢者、妊婦、免疫不全）で重要な疾患
+- 内分泌・代謝疾患、自己免疫疾患、遺伝性疾患での異常パターン
+- 薬剤性・医原性の異常パターン
+- 稀だがこの検査が唯一の手がかりとなる疾患
+
+記述ルール:
+- 各疾患について検査値の方向・程度・特異性を記述
+- 数値の目安を含める
+- 省略しない。まれな疾患も含めて全部書く""",
+
+    # Section 4: 鑑別パターン
+    """\
+あなたは日本の臨床医学に精通した専門家です。
+与えられた検査について、「鑑別パターン」のみを詳細に記述してください。
+出力はプレーンテキストのみ（JSON不要、マークダウン不要、コードブロック不要、見出し記号不要）。
+
+同じ検査異常を示す複数の疾患を、この検査の所見パターンの違いで鑑別する方法を記述する。
+
+記述内容:
+- 異常の程度差による鑑別（軽度上昇 vs 中等度 vs 著明上昇で示唆する疾患群が異なる場合）
+- 経時的変化パターンによる鑑別（一過性 vs 持続性、上昇速度、ピーク到達時間の違い）
+- 他の検査所見との組み合わせによる鑑別パターン
+  （「本検査高値 + ○○正常 → A疾患」「本検査高値 + ○○高値 → B疾患」の形式）
+- 正常値でも除外できない疾患（感度の限界）
+- 検査値の乖離が診断の手がかりとなるパターン
+- 省略しない。知っている鑑別パターンを全部書く""",
+
+    # Section 5: 偽陽性・偽陰性・限界
+    """\
+あなたは日本の臨床医学に精通した専門家です。
+与えられた検査について、「偽陽性・偽陰性・限界」のみを詳細に記述してください。
+出力はプレーンテキストのみ（JSON不要、マークダウン不要、コードブロック不要、見出し記号不要）。
+
+この検査結果が信頼できない全ての状況を網羅的に記述する。
+
+記述内容:
+- 偽陽性となる条件（疾患とは無関係に異常値を示す全てのケース）
+  - 薬剤による影響（具体的薬剤名と影響の方向）
+  - 生理的変動（運動後、食後、日内変動、月経周期、妊娠等）
+  - 検体の問題（溶血、乳び、ビリルビン干渉、凝固、保存条件等）
+- 偽陰性となる条件（疾患があるのに正常値を示す全てのケース）
+  - 時期の問題（発症早期、治療開始後等）
+  - 患者因子（免疫不全、高齢者、ステロイド使用中等）
+  - 技術的限界
+- この検査単独では診断できない状況
+- 検査値が「不適切な正常」を示すパラドックス（例: 重症でも正常値）
+- 省略しない。臨床的に重要な落とし穴を全部書く""",
+
+    # Section 6: 緊急値・時間軸・モニタリング
+    """\
+あなたは日本の臨床医学に精通した専門家です。
+与えられた検査について、「緊急値・時間軸・治療モニタリング」のみを詳細に記述してください。
+出力はプレーンテキストのみ（JSON不要、マークダウン不要、コードブロック不要、見出し記号不要）。
+
+記述内容:
+- パニック値・緊急報告値（具体的な閾値と、その値が示唆する緊急病態、必要な即時対応）
+- 発症からの時間経過と検査値推移
+  - 発症後何時間で異常が出現するか
+  - ピーク到達までの時間
+  - 正常化までの時間
+  - 疾患ごとの典型的な時間経過パターン
+- 治療効果判定の指標としての使い方
+  - 治療開始後、何時間/何日で改善が期待されるか
+  - 改善が見られない場合の解釈
+  - 再上昇・再燃のサイン
+- 予後予測への寄与（この検査値がどの程度の値だと予後不良か）
+- 連続測定（トレンド）の解釈法
+- 省略しない。時間軸に関する知識を全部書く""",
+]
+
+TEST_SECTION_TITLES = [
+    "適応臨床像",
+    "疾患別異常パターン（主要群）",
+    "疾患別異常パターン（追加群）",
+    "鑑別パターン",
+    "偽陽性・偽陰性・限界",
+    "緊急値・時間軸・モニタリング",
+]
+
+
+# ----------------------------------------------------------------
 # Gemini 3パス方式プロンプト（2セクション/パス、自然出力長を利用）
 # ----------------------------------------------------------------
 
@@ -1008,6 +1138,63 @@ async def _gen_findings_one_claude(client, semaphore, name, category, system_pro
     return index, combined
 
 
+async def _gen_findings_one_lemon_6pass(client, semaphore, name, category, system_prompt, index, total):
+    """1エントリの findings_description を生成（Lemon API 6パス並列 — 疾患用プロンプト）"""
+    label = f"[{index + 1}/{total}] {name}"
+
+    async def gen_section(sec_idx):
+        sec_label = f"{label} S{sec_idx + 1}"
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                async with semaphore:
+                    response = await client.chat.completions.create(
+                        model=LLM_MODEL,
+                        messages=[
+                            {"role": "system", "content": DISEASE_SECTION_PROMPTS[sec_idx]},
+                            {"role": "user", "content": f"{name}（{category}）"},
+                        ],
+                        temperature=1.0,
+                        max_tokens=65536,
+                    )
+                    text = response.choices[0].message.content or ""
+                    text = text.strip()
+                    text = re.sub(r"```.*?\n?", "", text).strip()
+                    text = re.sub(r"^#{1,4}\s+", "", text, flags=re.MULTILINE)
+                    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+                    return sec_idx, text if text else None
+            except Exception as e:
+                err_str = str(e)
+                retryable = any(code in err_str for code in ["429", "500", "503", "502", "rate"])
+                if retryable and attempt < max_retries - 1:
+                    wait = (attempt + 1) * 15
+                    print(f"    {sec_label} Retry {attempt+1}/{max_retries}, waiting {wait}s...")
+                    await asyncio.sleep(wait)
+                    continue
+                print(f"    {sec_label} ... ERROR: {e}")
+                return sec_idx, None
+        return sec_idx, None
+
+    results = await asyncio.gather(*[gen_section(i) for i in range(6)])
+
+    sections = [""] * 6
+    failed = []
+    for sec_idx, text in results:
+        if text:
+            sections[sec_idx] = text
+        else:
+            failed.append(sec_idx + 1)
+
+    combined = "\n\n".join(s for s in sections if s)
+    if not combined:
+        print(f"  {label} ... ERROR: all sections failed")
+        return index, None
+
+    suffix = f", failed S{failed}" if failed else ""
+    print(f"  {label} ... OK ({len(combined)}字, lemon-6-pass{suffix})")
+    return index, combined
+
+
 async def _gen_findings_one_vertex_6pass(vertex_client, semaphore, name, category, system_prompt, index, total):
     """1エントリの findings_description を生成（Vertex AI gemini-3-pro-preview 6パス並列方式）"""
     from google.genai.types import GenerateContentConfig
@@ -1063,6 +1250,121 @@ async def _gen_findings_one_vertex_6pass(vertex_client, semaphore, name, categor
 
     suffix = f", failed S{failed}" if failed else ""
     print(f"  {label} ... OK ({len(combined)}字, 6-pass{suffix})")
+    return index, combined
+
+
+async def _gen_test_findings_one_vertex_6pass(vertex_client, semaphore, name, category, system_prompt, index, total):
+    """1検査の findings_description を生成（Vertex AI 6パス並列 — 検査専用プロンプト）"""
+    from google.genai.types import GenerateContentConfig
+    label = f"[{index + 1}/{total}] {name}"
+
+    async def gen_section(sec_idx):
+        sec_label = f"{label} S{sec_idx + 1}"
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                async with semaphore:
+                    response = await vertex_client.aio.models.generate_content(
+                        model=VERTEX_MODEL,
+                        contents=f"{name}（{category}）",
+                        config=GenerateContentConfig(
+                            system_instruction=TEST_SECTION_PROMPTS[sec_idx],
+                            temperature=1.0,
+                            max_output_tokens=65536,
+                        ),
+                    )
+                    text = response.text if response.text else ""
+                    text = text.strip()
+                    text = re.sub(r"```.*?\n?", "", text).strip()
+                    text = re.sub(r"^#{1,4}\s+", "", text, flags=re.MULTILINE)
+                    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+                    return sec_idx, text if text else None
+            except Exception as e:
+                err_str = str(e)
+                retryable = any(code in err_str for code in ["429", "500", "503", "502", "RESOURCE_EXHAUSTED"])
+                if retryable and attempt < max_retries - 1:
+                    wait = (attempt + 1) * 15
+                    print(f"    {sec_label} Retry {attempt+1}/{max_retries}, waiting {wait}s...")
+                    await asyncio.sleep(wait)
+                    continue
+                print(f"    {sec_label} ... ERROR: {e}")
+                return sec_idx, None
+        return sec_idx, None
+
+    results = await asyncio.gather(*[gen_section(i) for i in range(6)])
+
+    sections = [""] * 6
+    failed = []
+    for sec_idx, text in results:
+        if text:
+            sections[sec_idx] = text
+        else:
+            failed.append(sec_idx + 1)
+
+    combined = "\n\n".join(s for s in sections if s)
+    if not combined:
+        print(f"  {label} ... ERROR: all sections failed")
+        return index, None
+
+    suffix = f", failed S{failed}" if failed else ""
+    print(f"  {label} ... OK ({len(combined)}字, test-6-pass{suffix})")
+    return index, combined
+
+
+async def _gen_test_findings_one_lemon_6pass(client, semaphore, name, category, system_prompt, index, total):
+    """1検査の findings_description を生成（Lemon API 6パス並列 — 検査専用プロンプト）"""
+    label = f"[{index + 1}/{total}] {name}"
+
+    async def gen_section(sec_idx):
+        sec_label = f"{label} S{sec_idx + 1}"
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                async with semaphore:
+                    response = await client.chat.completions.create(
+                        model=LLM_MODEL,
+                        messages=[
+                            {"role": "system", "content": TEST_SECTION_PROMPTS[sec_idx]},
+                            {"role": "user", "content": f"{name}（{category}）"},
+                        ],
+                        temperature=1.0,
+                        max_tokens=65536,
+                    )
+                    text = response.choices[0].message.content or ""
+                    text = text.strip()
+                    text = re.sub(r"```.*?\n?", "", text).strip()
+                    text = re.sub(r"^#{1,4}\s+", "", text, flags=re.MULTILINE)
+                    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+                    return sec_idx, text if text else None
+            except Exception as e:
+                err_str = str(e)
+                retryable = any(code in err_str for code in ["429", "500", "503", "502", "rate"])
+                if retryable and attempt < max_retries - 1:
+                    wait = (attempt + 1) * 15
+                    print(f"    {sec_label} Retry {attempt+1}/{max_retries}, waiting {wait}s...")
+                    await asyncio.sleep(wait)
+                    continue
+                print(f"    {sec_label} ... ERROR: {e}")
+                return sec_idx, None
+        return sec_idx, None
+
+    results = await asyncio.gather(*[gen_section(i) for i in range(6)])
+
+    sections = [""] * 6
+    failed = []
+    for sec_idx, text in results:
+        if text:
+            sections[sec_idx] = text
+        else:
+            failed.append(sec_idx + 1)
+
+    combined = "\n\n".join(s for s in sections if s)
+    if not combined:
+        print(f"  {label} ... ERROR: all sections failed")
+        return index, None
+
+    suffix = f", failed S{failed}" if failed else ""
+    print(f"  {label} ... OK ({len(combined)}字, lemon-6-pass{suffix})")
     return index, combined
 
 
@@ -1150,8 +1452,8 @@ async def _generate_disease_findings(client, semaphore, dry_run, force=False, us
         gen_func = _gen_findings_one_claude
         model_label = "Claude Opus 4.6"
     else:
-        gen_func = _gen_findings_one
-        model_label = "Gemini"
+        gen_func = _gen_findings_one_lemon_6pass
+        model_label = f"Lemon {LLM_MODEL} 6-pass"
     print(f"モデル: {model_label} / 並行数: {semaphore._value}")
 
     save_lock = asyncio.Lock()
@@ -1186,31 +1488,67 @@ async def _generate_disease_findings(client, semaphore, dry_run, force=False, us
     print(f"疾患 findings_description: {success}/{len(remaining)}件 生成完了 (エラー{error_count[0]}件)")
 
 
-async def _generate_test_findings(client, semaphore, dry_run):
-    """検査の findings_description を一括生成"""
+async def _generate_test_findings(client, semaphore, dry_run, force=False, use_vertex=False):
+    """検査の findings_description を一括生成。
+    use_vertex=True: Vertex AI 6パス並列（TEST_SECTION_PROMPTS使用）
+    force=True: 既存のfindings_descriptionをfindings_description_v1にバックアップして上書き
+    中間保存: 10件完了ごとにJSONLを書き出し"""
     tests = read_jsonl(TESTS_JSONL)
-    remaining = [(i, t) for i, t in enumerate(tests) if not t.get("findings_description")]
-    print(f"検査: {len(tests)}件中 {len(remaining)}件が未生成")
+
+    if force:
+        remaining = [(i, t) for i, t in enumerate(tests)]
+        print(f"検査: {len(tests)}件（全件再生成）")
+        # 既存のfindings_descriptionをv1としてバックアップ
+        for _, t in remaining:
+            if t.get("findings_description") and not t.get("findings_description_v1"):
+                t["findings_description_v1"] = t["findings_description"]
+        write_jsonl(TESTS_JSONL, tests)
+        print(f"  既存findings_descriptionをfindings_description_v1にバックアップ完了")
+    else:
+        remaining = [(i, t) for i, t in enumerate(tests) if not t.get("findings_description")]
+        print(f"検査: {len(tests)}件中 {len(remaining)}件が未生成")
 
     if not remaining or dry_run:
         return
 
-    tasks = [
-        _gen_findings_one(
+    if use_vertex:
+        gen_func = _gen_test_findings_one_vertex_6pass
+        model_label = f"Vertex AI {VERTEX_MODEL} test-6-pass"
+    else:
+        gen_func = _gen_test_findings_one_lemon_6pass
+        model_label = f"Lemon API {LLM_MODEL} test-6-pass"
+    print(f"モデル: {model_label} / 並行数: {semaphore._value}")
+
+    save_lock = asyncio.Lock()
+    completed_count = [0]
+    error_count = [0]
+
+    async def gen_and_save(orig_idx, t, task_idx):
+        idx, text = await gen_func(
             client, semaphore,
             t["test_name"], t.get("category", ""),
-            TEST_FINDINGS_PROMPT, idx, len(remaining),
+            TEST_FINDINGS_PROMPT, task_idx, len(remaining),
         )
-        for idx, (_, t) in enumerate(remaining)
+        if text:
+            async with save_lock:
+                tests[orig_idx]["findings_description"] = text
+                completed_count[0] += 1
+                if completed_count[0] % 10 == 0:
+                    write_jsonl(TESTS_JSONL, tests)
+                    print(f"  === 中間保存 {completed_count[0]}/{len(remaining)}件 (エラー{error_count[0]}件) ===")
+        else:
+            error_count[0] += 1
+        return text is not None
+
+    tasks = [
+        gen_and_save(orig_idx, t, idx)
+        for idx, (orig_idx, t) in enumerate(remaining)
     ]
     results = await asyncio.gather(*tasks)
-    for idx, text in results:
-        if text:
-            orig_idx = remaining[idx][0]
-            tests[orig_idx]["findings_description"] = text
+
     write_jsonl(TESTS_JSONL, tests)
-    success = sum(1 for _, t in results if t)
-    print(f"検査 findings_description: {success}/{len(remaining)}件 生成完了")
+    success = sum(1 for r in results if r)
+    print(f"検査 findings_description: {success}/{len(remaining)}件 生成完了 (エラー{error_count[0]}件)")
 
 
 async def cmd_findings_desc_async(args):
@@ -1221,16 +1559,20 @@ async def cmd_findings_desc_async(args):
     use_vertex = getattr(args, 'vertex', False)
     target = args.target
 
+    # Vertex AIクライアントは共有（diseases/tests両方で使う可能性）
+    vertex_client = None
+    if use_vertex:
+        from google import genai
+        vertex_client = genai.Client(
+            project=VERTEX_PROJECT,
+            location=VERTEX_LOCATION,
+            vertexai=True,
+        )
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = VERTEX_SA_KEY
+
     coros = []
     if target in ("diseases", "all"):
         if use_vertex:
-            from google import genai
-            vertex_client = genai.Client(
-                project=VERTEX_PROJECT,
-                location=VERTEX_LOCATION,
-                vertexai=True,
-            )
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = VERTEX_SA_KEY
             disease_sem = asyncio.Semaphore(args.concurrency)
             coros.append(_generate_disease_findings(vertex_client, disease_sem, args.dry_run, force=force, use_vertex=True))
         elif use_claude:
@@ -1243,9 +1585,13 @@ async def cmd_findings_desc_async(args):
             coros.append(_generate_disease_findings(disease_client, disease_sem, args.dry_run, force=force, use_gemini_3pass=use_gemini_3pass))
 
     if target in ("tests", "all"):
-        test_client = AsyncOpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
-        test_sem = asyncio.Semaphore(args.concurrency)
-        coros.append(_generate_test_findings(test_client, test_sem, args.dry_run))
+        if use_vertex:
+            test_sem = asyncio.Semaphore(args.concurrency)
+            coros.append(_generate_test_findings(vertex_client, test_sem, args.dry_run, force=force, use_vertex=True))
+        else:
+            test_client = AsyncOpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
+            test_sem = asyncio.Semaphore(args.concurrency)
+            coros.append(_generate_test_findings(test_client, test_sem, args.dry_run))
 
     await asyncio.gather(*coros)
 

@@ -2,10 +2,11 @@
 VeSMed - Web UI (Gradio)
 ブラウザから操作できる対話型インターフェース
 
-フロー（Option 3: 症状と検査結果を分離）:
-  1. 症状入力 → ベクトル検索 → 候補疾患（初回、固定）
-  2. 検査結果入力 → sign(polarity) × sim_matrix で疾患重み更新
-  3. 全テキスト（症状+結果）→ novelty計算 → 検査ランキング
+フロー:
+  1. テキスト入力 → LLM/Embeddingで症状と検査結果を自動分離
+  2. 症状 → ベクトル検索 → 候補疾患
+  3. 検査結果 → 極性判定 × 類似度行列で疾患重み更新
+  4. 全テキスト → novelty計算 → 検査ランキング
 """
 
 import gradio as gr
@@ -27,34 +28,41 @@ def init_engine():
 # コールバック
 # ----------------------------------------------------------------
 
-def analyze_patient(symptoms_text, results_text, mode):
-    """症状と検査結果を分離して分析（Option 3）"""
+def analyze_patient(input_text, mode):
+    """統合テキストから自動分離して分析"""
     import time as _time
     from concurrent.futures import ThreadPoolExecutor
-    if not symptoms_text.strip():
+    if not input_text.strip():
         return (
-            "症状を入力してください。",
+            "テキストを入力してください。",
             None, None, None, None, None, None,
         )
 
     eng = init_engine()
-    # モード変換: UIラベル → engine引数
     engine_mode = "llm" if "LLM" in mode else "fast"
 
     t0 = _time.time()
 
-    # Step 1: 症状で疾患検索（初回、固定）
+    # Step 0: 症状と検査結果を自動分離
+    symptoms_text, result_lines = eng.split_symptoms_results(
+        input_text, mode=engine_mode,
+    )
+    t_split = _time.time()
+    print(f"[TIMING] split: {t_split-t0:.1f}s")
+
+    if not symptoms_text.strip():
+        # 分離で症状が空になった場合、全テキストを症状として使う
+        symptoms_text = input_text
+
+    # Step 1: 症状で疾患検索
     candidates = eng.search_diseases(symptoms_text)
     t1 = _time.time()
-    print(f"[TIMING] search_diseases: {t1-t0:.1f}s")
+    print(f"[TIMING] search_diseases: {t1-t_split:.1f}s")
 
     candidates = eng.compute_priors(candidates)
 
     # Step 2+3: 検査結果更新 と novelty計算を並行実行
-    result_lines = [l.strip() for l in results_text.split('\n') if l.strip()]
-    full_text = symptoms_text
-    if result_lines:
-        full_text += '\n' + '\n'.join(result_lines)
+    full_text = input_text  # noveltyは全テキストで計算
 
     import copy
     cands_copy = copy.deepcopy(candidates)
@@ -65,11 +73,9 @@ def analyze_patient(symptoms_text, results_text, mode):
             symptoms_text, engine_mode,
         ) if result_lines else None
         fut_novelty = executor.submit(eng.compute_novelty, full_text)
-        # LLMモード: HPE所見抽出（極性付き）を並行実行
         fut_hpe_extract = executor.submit(
             eng.extract_hpe_findings, full_text,
         ) if engine_mode == "llm" else None
-        # Embedding noveltyは常に実行（LLM不要）
         fut_novelty_hpe = executor.submit(eng.compute_novelty_hpe, full_text)
 
         novelty = fut_novelty.result()
@@ -79,17 +85,15 @@ def analyze_patient(symptoms_text, results_text, mode):
 
     # HPE所見でnovelty上書き + 疾患重み更新
     if hpe_findings:
-        # novelty: 聴取済み項目を完全抑制
         for f in hpe_findings:
             novelty_hpe_base[f["index"]] = 0.0
-        # 疾患重み: 陽性→↑、陰性→↓
         candidates = eng.update_from_hpe(candidates, hpe_findings)
     novelty_hpe = novelty_hpe_base
 
     t2 = _time.time()
     print(f"[TIMING] update+novelty+hpe parallel ({engine_mode}): {t2-t1:.1f}s")
 
-    # Step 4: 検査ランキング + Part D（CPU演算のみ、高速）
+    # Step 4: 検査ランキング
     ranked_tests = eng.rank_tests(candidates, novelty=novelty)
     critical_tests = eng.rank_tests_critical(candidates, novelty=novelty)
     confirm_tests = eng.rank_tests_confirm(candidates, novelty=novelty)
@@ -100,7 +104,7 @@ def analyze_patient(symptoms_text, results_text, mode):
 
     n_results = len(result_lines)
     mode_label = "LLM注釈" if engine_mode == "llm" else "高速"
-    status = f"分析完了（{mode_label}）/ 全{len(candidates)}疾患 / 検査結果{n_results}件反映"
+    status = f"分析完了（{mode_label}）/ 全{len(candidates)}疾患 / 検査結果{n_results}件自動検出"
 
     return (
         status,
@@ -115,7 +119,7 @@ def analyze_patient(symptoms_text, results_text, mode):
 
 def reset_session():
     return (
-        "", "",
+        "",
         "リセットしました。",
         None, None, None, None, None, None,
     )
@@ -220,21 +224,16 @@ with gr.Blocks(
 
     gr.Markdown("""
 # VeSMed - ベクトル空間医学統一フレームワーク
-症状 → ベクトル検索 → 候補疾患。検査結果 → 極性判定 × 類似度行列で疾患重み更新。
+臨床情報を自由記述 → 症状と検査結果を自動分離 → ベクトル空間で疾患検索・検査推奨
     """)
 
     # ===== 上段: 入力 =====
     with gr.Row():
         with gr.Column(scale=3):
-            symptoms_input = gr.Textbox(
-                label="症状（自由記述 — 疾患検索の基盤）",
-                placeholder="例: 67歳の男性。繰り返す発熱を主訴に来院。7週間前から38℃前後の発熱が出現し、市販の解熱薬で一時的に解熱するが再度発熱する。",
-                lines=4,
-            )
-            results_input = gr.Textbox(
-                label="検査結果（1行1件 — 極性×類似度行列で疾患重み更新）",
-                placeholder="例:\nγ-GTP正常値\n直接ビリルビン正常値\nMRCP異常なし\n血液培養: 黄色ブドウ球菌陽性",
-                lines=4,
+            input_text = gr.Textbox(
+                label="臨床情報（症状・所見・検査結果を自由に記述）",
+                placeholder="例: 67歳男性。繰り返す発熱を主訴に来院。7週間前から38℃前後の発熱が出現。\n血液培養: 黄色ブドウ球菌陽性。γ-GTP正常。直接ビリルビン正常。",
+                lines=6,
             )
             with gr.Row():
                 analyze_btn = gr.Button("分析開始", variant="primary", scale=2)
@@ -300,18 +299,18 @@ with gr.Blocks(
 
     analyze_btn.click(
         fn=analyze_patient,
-        inputs=[symptoms_input, results_input, mode_radio],
+        inputs=[input_text, mode_radio],
         outputs=outputs,
     )
-    symptoms_input.submit(
+    input_text.submit(
         fn=analyze_patient,
-        inputs=[symptoms_input, results_input, mode_radio],
+        inputs=[input_text, mode_radio],
         outputs=outputs,
     )
 
     reset_btn.click(
         fn=reset_session,
-        outputs=[symptoms_input, results_input] + outputs,
+        outputs=[input_text] + outputs,
     )
 
     # Part D用: HPEエンジン情報表示
