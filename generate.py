@@ -11,6 +11,7 @@ import asyncio
 import re
 import os
 import threading
+from datetime import date
 from openai import AsyncOpenAI
 from config import (
     LLM_API_KEY, LLM_BASE_URL, LLM_MODEL,
@@ -19,9 +20,9 @@ from config import (
     DISEASES_JSONL, TESTS_JSONL, FINDINGS_JSONL, DATA_DIR,
 )
 
-# Vertex AI設定
-VERTEX_SA_KEY = os.path.join(os.path.dirname(__file__), "thermal-outlet-483512-m4-8ec9647654b6.json")
-VERTEX_PROJECT = "thermal-outlet-483512-m4"
+# Vertex AI設定（メタデータ生成用 — pro モデル）
+VERTEX_SA_KEY = os.path.join(os.path.dirname(__file__), "cgdhgjhg978@gmail.com vertex.json")
+VERTEX_PROJECT = "project-1891a118-c835-4ef0-b8b"
 VERTEX_LOCATION = "global"
 VERTEX_MODEL = "gemini-3-pro-preview"
 
@@ -830,6 +831,24 @@ DISEASE_SECTION_PROMPTS = [
 - 時間経過による鑑別（急性 vs 亜急性 vs 慢性）
 - 所見の組み合わせパターンによる鑑別
 - この疾患の確定診断に最も重要な所見""",
+    # Section 7: 病態生理（gen_pathophysiology.pyから統合）
+    """\
+あなたは日本の臨床医学・病態生理学に精通した専門家です。
+与えられた疾患について、「病態生理・発症メカニズム」のみを詳細に記述してください。
+出力はプレーンテキストのみ。省略しない。
+
+【重要】臨床的な症状や検査所見は「この疾患ではこの所見が見られる」ではなく、
+「なぜその所見が生じるか（メカニズム）」を軸に記述すること。
+
+記述内容:
+- 発症の分子・細胞レベルのメカニズム（免疫応答、受容体異常、代謝経路の障害、遺伝子変異等）
+- 臓器障害の機序（なぜその臓器が傷害されるか）
+- 主要症状が生じる病態生理学的理由（例: なぜ関節痛が生じるか → 滑膜への免疫複合体沈着と補体活性化による炎症）
+- 検査異常が生じるメカニズム（例: なぜCRP上昇か → IL-6による肝臓でのCRP合成亢進）
+- 病型・亜型間のメカニズムの違い
+- 時間経過に伴う病態の進展（急性期→慢性期の変化）
+- 合併症が生じるメカニズム
+- 治療標的となる経路（薬理学的メカニズムの理解に資する記述）""",
 ]
 
 SECTION_TITLES = [
@@ -839,7 +858,70 @@ SECTION_TITLES = [
     "バイタルサイン・身体所見",
     "検査所見パターン",
     "鑑別キー",
+    "病態生理・発症メカニズム",
 ]
+
+# ─── 疾患 fd_* フィールド定義（7セクション） ───
+DISEASE_FD_KEYS = [
+    "fd_background",       # S1: 好発背景・リスク因子
+    "fd_typical",          # S2: 典型来院像
+    "fd_atypical",         # S3: 非典型来院像・ピットフォール
+    "fd_physical",         # S4: バイタルサイン・身体所見
+    "fd_tests",            # S5: 検査所見パターン
+    "fd_differential",     # S6: 鑑別キー
+    "fd_pathophysiology",  # S7: 病態生理・発症メカニズム
+]
+
+DISEASE_FD_TITLES = {
+    "fd_background":      "【好発背景・リスク因子・誘因】",
+    "fd_typical":         "【典型来院像】",
+    "fd_atypical":        "【非典型来院像・ピットフォール】",
+    "fd_physical":        "【バイタルサイン・身体所見】",
+    "fd_tests":           "【検査所見パターン】",
+    "fd_differential":    "【鑑別キー】",
+    "fd_pathophysiology": "【病態生理・発症メカニズム】",
+}
+
+# セクション名 → インデックスのマッピング（--section引数用）
+DISEASE_SECTION_MAP = {
+    "background": 0, "typical": 1, "atypical": 2,
+    "physical": 3, "tests": 4, "differential": 5, "pathophysiology": 6,
+}
+
+# ─── 検査 fd_* フィールド定義（6セクション） ───
+TEST_FD_KEYS = [
+    "fd_indications",          # T1: 適応臨床像
+    "fd_major_patterns",       # T2: 疾患別異常パターン（主要群）
+    "fd_additional_patterns",  # T3: 疾患別異常パターン（追加群）
+    "fd_differential",         # T4: 鑑別パターン
+    "fd_pitfalls",             # T5: 偽陽性・偽陰性・限界
+    "fd_urgency_timeline",     # T6: 緊急値・時間軸・モニタリング
+]
+
+TEST_FD_TITLES = {
+    "fd_indications":          "【適応臨床像】",
+    "fd_major_patterns":       "【疾患別異常パターン（主要群）】",
+    "fd_additional_patterns":  "【疾患別異常パターン（追加群）】",
+    "fd_differential":         "【鑑別パターン】",
+    "fd_pitfalls":             "【偽陽性・偽陰性・限界】",
+    "fd_urgency_timeline":     "【緊急値・時間軸・モニタリング】",
+}
+
+TEST_SECTION_MAP = {
+    "indications": 0, "major_patterns": 1, "additional_patterns": 2,
+    "differential": 3, "pitfalls": 4, "urgency_timeline": 5,
+}
+
+
+def assemble_findings_description(record, fd_keys, fd_titles):
+    """fd_* フィールドから findings_description を組み立て（後方互換）"""
+    parts = []
+    for key in fd_keys:
+        text = record.get(key, "")
+        if text:
+            title = fd_titles[key]
+            parts.append(f"{title}\n{text}")
+    return "\n\n".join(parts)
 
 
 # ----------------------------------------------------------------
@@ -1138,8 +1220,16 @@ async def _gen_findings_one_claude(client, semaphore, name, category, system_pro
     return index, combined
 
 
-async def _gen_findings_one_lemon_6pass(client, semaphore, name, category, system_prompt, index, total):
-    """1エントリの findings_description を生成（Lemon API 6パス並列 — 疾患用プロンプト）"""
+async def _gen_findings_one_lemon_6pass(client, semaphore, name, category, system_prompt, index, total,
+                                        target_sections=None, fd_keys=None, section_prompts=None):
+    """1エントリの findings_description をセクション別に生成（Lemon API 並列）
+    戻り値: (index, sections_dict) — sections_dict = {fd_key: text} or None"""
+    if section_prompts is None:
+        section_prompts = DISEASE_SECTION_PROMPTS
+    if fd_keys is None:
+        fd_keys = DISEASE_FD_KEYS
+    if target_sections is None:
+        target_sections = list(range(len(section_prompts)))
     label = f"[{index + 1}/{total}] {name}"
 
     async def gen_section(sec_idx):
@@ -1151,7 +1241,7 @@ async def _gen_findings_one_lemon_6pass(client, semaphore, name, category, syste
                     response = await client.chat.completions.create(
                         model=LLM_MODEL,
                         messages=[
-                            {"role": "system", "content": DISEASE_SECTION_PROMPTS[sec_idx]},
+                            {"role": "system", "content": section_prompts[sec_idx]},
                             {"role": "user", "content": f"{name}（{category}）"},
                         ],
                         temperature=1.0,
@@ -1175,28 +1265,36 @@ async def _gen_findings_one_lemon_6pass(client, semaphore, name, category, syste
                 return sec_idx, None
         return sec_idx, None
 
-    results = await asyncio.gather(*[gen_section(i) for i in range(6)])
+    results = await asyncio.gather(*[gen_section(i) for i in target_sections])
 
-    sections = [""] * 6
+    sections_dict = {}
     failed = []
     for sec_idx, text in results:
         if text:
-            sections[sec_idx] = text
+            sections_dict[fd_keys[sec_idx]] = text
         else:
             failed.append(sec_idx + 1)
 
-    combined = "\n\n".join(s for s in sections if s)
-    if not combined:
+    if not sections_dict:
         print(f"  {label} ... ERROR: all sections failed")
         return index, None
 
+    total_chars = sum(len(t) for t in sections_dict.values())
     suffix = f", failed S{failed}" if failed else ""
-    print(f"  {label} ... OK ({len(combined)}字, lemon-6-pass{suffix})")
-    return index, combined
+    print(f"  {label} ... OK ({total_chars}字, {len(sections_dict)}sec{suffix})")
+    return index, sections_dict
 
 
-async def _gen_findings_one_vertex_6pass(vertex_client, semaphore, name, category, system_prompt, index, total):
-    """1エントリの findings_description を生成（Vertex AI gemini-3-pro-preview 6パス並列方式）"""
+async def _gen_findings_one_vertex_6pass(vertex_client, semaphore, name, category, system_prompt, index, total,
+                                         target_sections=None, fd_keys=None, section_prompts=None):
+    """1エントリの findings_description をセクション別に生成（Vertex AI 並列）
+    戻り値: (index, sections_dict) — sections_dict = {fd_key: text} or None"""
+    if section_prompts is None:
+        section_prompts = DISEASE_SECTION_PROMPTS
+    if fd_keys is None:
+        fd_keys = DISEASE_FD_KEYS
+    if target_sections is None:
+        target_sections = list(range(len(section_prompts)))
     from google.genai.types import GenerateContentConfig
     label = f"[{index + 1}/{total}] {name}"
 
@@ -1210,7 +1308,7 @@ async def _gen_findings_one_vertex_6pass(vertex_client, semaphore, name, categor
                         model=VERTEX_MODEL,
                         contents=f"{name}（{category}）",
                         config=GenerateContentConfig(
-                            system_instruction=DISEASE_SECTION_PROMPTS[sec_idx],
+                            system_instruction=section_prompts[sec_idx],
                             temperature=1.0,
                             max_output_tokens=65536,
                         ),
@@ -1233,139 +1331,48 @@ async def _gen_findings_one_vertex_6pass(vertex_client, semaphore, name, categor
                 return sec_idx, None
         return sec_idx, None
 
-    results = await asyncio.gather(*[gen_section(i) for i in range(6)])
+    results = await asyncio.gather(*[gen_section(i) for i in target_sections])
 
-    sections = [""] * 6
+    sections_dict = {}
     failed = []
     for sec_idx, text in results:
         if text:
-            sections[sec_idx] = text
+            sections_dict[fd_keys[sec_idx]] = text
         else:
             failed.append(sec_idx + 1)
 
-    combined = "\n\n".join(s for s in sections if s)
-    if not combined:
+    if not sections_dict:
         print(f"  {label} ... ERROR: all sections failed")
         return index, None
 
+    total_chars = sum(len(t) for t in sections_dict.values())
     suffix = f", failed S{failed}" if failed else ""
-    print(f"  {label} ... OK ({len(combined)}字, 6-pass{suffix})")
-    return index, combined
+    print(f"  {label} ... OK ({total_chars}字, {len(sections_dict)}sec{suffix})")
+    return index, sections_dict
 
 
-async def _gen_test_findings_one_vertex_6pass(vertex_client, semaphore, name, category, system_prompt, index, total):
-    """1検査の findings_description を生成（Vertex AI 6パス並列 — 検査専用プロンプト）"""
-    from google.genai.types import GenerateContentConfig
-    label = f"[{index + 1}/{total}] {name}"
-
-    async def gen_section(sec_idx):
-        sec_label = f"{label} S{sec_idx + 1}"
-        max_retries = 5
-        for attempt in range(max_retries):
-            try:
-                async with semaphore:
-                    response = await vertex_client.aio.models.generate_content(
-                        model=VERTEX_MODEL,
-                        contents=f"{name}（{category}）",
-                        config=GenerateContentConfig(
-                            system_instruction=TEST_SECTION_PROMPTS[sec_idx],
-                            temperature=1.0,
-                            max_output_tokens=65536,
-                        ),
-                    )
-                    text = response.text if response.text else ""
-                    text = text.strip()
-                    text = re.sub(r"```.*?\n?", "", text).strip()
-                    text = re.sub(r"^#{1,4}\s+", "", text, flags=re.MULTILINE)
-                    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
-                    return sec_idx, text if text else None
-            except Exception as e:
-                err_str = str(e)
-                retryable = any(code in err_str for code in ["429", "500", "503", "502", "RESOURCE_EXHAUSTED"])
-                if retryable and attempt < max_retries - 1:
-                    wait = (attempt + 1) * 15
-                    print(f"    {sec_label} Retry {attempt+1}/{max_retries}, waiting {wait}s...")
-                    await asyncio.sleep(wait)
-                    continue
-                print(f"    {sec_label} ... ERROR: {e}")
-                return sec_idx, None
-        return sec_idx, None
-
-    results = await asyncio.gather(*[gen_section(i) for i in range(6)])
-
-    sections = [""] * 6
-    failed = []
-    for sec_idx, text in results:
-        if text:
-            sections[sec_idx] = text
-        else:
-            failed.append(sec_idx + 1)
-
-    combined = "\n\n".join(s for s in sections if s)
-    if not combined:
-        print(f"  {label} ... ERROR: all sections failed")
-        return index, None
-
-    suffix = f", failed S{failed}" if failed else ""
-    print(f"  {label} ... OK ({len(combined)}字, test-6-pass{suffix})")
-    return index, combined
+async def _gen_test_findings_one_vertex_6pass(vertex_client, semaphore, name, category, system_prompt, index, total,
+                                              target_sections=None):
+    """1検査の findings_description をセクション別に生成（Vertex AI 並列）
+    戻り値: (index, sections_dict) — sections_dict = {fd_key: text} or None"""
+    return await _gen_findings_one_vertex_6pass(
+        vertex_client, semaphore, name, category, system_prompt, index, total,
+        target_sections=target_sections,
+        fd_keys=TEST_FD_KEYS,
+        section_prompts=TEST_SECTION_PROMPTS,
+    )
 
 
-async def _gen_test_findings_one_lemon_6pass(client, semaphore, name, category, system_prompt, index, total):
-    """1検査の findings_description を生成（Lemon API 6パス並列 — 検査専用プロンプト）"""
-    label = f"[{index + 1}/{total}] {name}"
-
-    async def gen_section(sec_idx):
-        sec_label = f"{label} S{sec_idx + 1}"
-        max_retries = 5
-        for attempt in range(max_retries):
-            try:
-                async with semaphore:
-                    response = await client.chat.completions.create(
-                        model=LLM_MODEL,
-                        messages=[
-                            {"role": "system", "content": TEST_SECTION_PROMPTS[sec_idx]},
-                            {"role": "user", "content": f"{name}（{category}）"},
-                        ],
-                        temperature=1.0,
-                        max_tokens=65536,
-                    )
-                    text = response.choices[0].message.content or ""
-                    text = text.strip()
-                    text = re.sub(r"```.*?\n?", "", text).strip()
-                    text = re.sub(r"^#{1,4}\s+", "", text, flags=re.MULTILINE)
-                    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
-                    return sec_idx, text if text else None
-            except Exception as e:
-                err_str = str(e)
-                retryable = any(code in err_str for code in ["429", "500", "503", "502", "rate"])
-                if retryable and attempt < max_retries - 1:
-                    wait = (attempt + 1) * 15
-                    print(f"    {sec_label} Retry {attempt+1}/{max_retries}, waiting {wait}s...")
-                    await asyncio.sleep(wait)
-                    continue
-                print(f"    {sec_label} ... ERROR: {e}")
-                return sec_idx, None
-        return sec_idx, None
-
-    results = await asyncio.gather(*[gen_section(i) for i in range(6)])
-
-    sections = [""] * 6
-    failed = []
-    for sec_idx, text in results:
-        if text:
-            sections[sec_idx] = text
-        else:
-            failed.append(sec_idx + 1)
-
-    combined = "\n\n".join(s for s in sections if s)
-    if not combined:
-        print(f"  {label} ... ERROR: all sections failed")
-        return index, None
-
-    suffix = f", failed S{failed}" if failed else ""
-    print(f"  {label} ... OK ({len(combined)}字, lemon-6-pass{suffix})")
-    return index, combined
+async def _gen_test_findings_one_lemon_6pass(client, semaphore, name, category, system_prompt, index, total,
+                                             target_sections=None):
+    """1検査の findings_description をセクション別に生成（Lemon API 並列）
+    戻り値: (index, sections_dict) — sections_dict = {fd_key: text} or None"""
+    return await _gen_findings_one_lemon_6pass(
+        client, semaphore, name, category, system_prompt, index, total,
+        target_sections=target_sections,
+        fd_keys=TEST_FD_KEYS,
+        section_prompts=TEST_SECTION_PROMPTS,
+    )
 
 
 async def _gen_findings_one_gemini_3pass(client, semaphore, name, category, system_prompt, index, total):
@@ -1425,18 +1432,39 @@ async def _gen_findings_one_gemini_3pass(client, semaphore, name, category, syst
     return index, combined
 
 
-async def _generate_disease_findings(client, semaphore, dry_run, force=False, use_claude=False, use_gemini_3pass=False, use_vertex=False):
-    """疾患の findings_description を一括生成
-    --force: 全件再生成
-    --vertex: Vertex AI gemini-3-pro-preview 6パス方式
+async def _generate_disease_findings(client, semaphore, dry_run, force=False, use_claude=False,
+                                     use_gemini_3pass=False, use_vertex=False, section=None):
+    """疾患の findings_description をセクション別に一括生成
+    --force: 全件再生成（または--sectionで特定セクションのみ）
+    --section: 特定セクションのみ再生成（forceと組み合わせ）
+    --vertex: Vertex AI gemini-3-pro-preview 7パス方式
     中間保存: 10件完了ごとにJSONLを書き出し"""
     diseases = read_jsonl(DISEASES_JSONL)
 
+    # --section 指定時のターゲットセクション解決
+    target_sections = None
+    if section:
+        if section not in DISEASE_SECTION_MAP:
+            print(f"エラー: 不明なセクション '{section}'。有効値: {', '.join(DISEASE_SECTION_MAP.keys())}")
+            return
+        target_sections = [DISEASE_SECTION_MAP[section]]
+        target_fd_key = DISEASE_FD_KEYS[target_sections[0]]
+        print(f"セクション指定: {section} (S{target_sections[0]+1}, {target_fd_key})")
+
     if force:
-        remaining = [(i, d) for i, d in enumerate(diseases)]
-        print(f"疾患: {len(diseases)}件（全件再生成）")
+        if section:
+            # --section --force: 全件の特定セクションを再生成
+            remaining = [(i, d) for i, d in enumerate(diseases)]
+            print(f"疾患: {len(diseases)}件（セクション '{section}' を全件再生成）")
+        else:
+            remaining = [(i, d) for i, d in enumerate(diseases)]
+            print(f"疾患: {len(diseases)}件（全件再生成）")
+    elif section:
+        # --section のみ: 特定セクションが未生成のものだけ
+        remaining = [(i, d) for i, d in enumerate(diseases) if not d.get(target_fd_key)]
+        print(f"疾患: {len(diseases)}件中 {len(remaining)}件が {target_fd_key} 未生成")
     else:
-        remaining = [(i, d) for i, d in enumerate(diseases) if not d.get("findings_description")]
+        remaining = [(i, d) for i, d in enumerate(diseases) if not d.get("fd_background")]
         print(f"疾患: {len(diseases)}件中 {len(remaining)}件が未生成")
 
     if not remaining or dry_run:
@@ -1444,38 +1472,69 @@ async def _generate_disease_findings(client, semaphore, dry_run, force=False, us
 
     if use_vertex:
         gen_func = _gen_findings_one_vertex_6pass
-        model_label = f"Vertex AI {VERTEX_MODEL} 6-pass"
+        model_label = f"Vertex AI {VERTEX_MODEL}"
     elif use_gemini_3pass:
         gen_func = _gen_findings_one_gemini_3pass
-        model_label = "Gemini Pro 3-pass"
+        model_label = "Gemini Pro 3-pass (deprecated)"
     elif use_claude:
         gen_func = _gen_findings_one_claude
         model_label = "Claude Opus 4.6"
     else:
         gen_func = _gen_findings_one_lemon_6pass
-        model_label = f"Lemon {LLM_MODEL} 6-pass"
+        model_label = f"Lemon {LLM_MODEL}"
     print(f"モデル: {model_label} / 並行数: {semaphore._value}")
 
     save_lock = asyncio.Lock()
     completed_count = [0]
     error_count = [0]
+    today = date.today().isoformat()
 
     async def gen_and_save(orig_idx, d, task_idx):
-        idx, text = await gen_func(
+        # gemini_3pass と claude は旧方式（文字列を返す）のためラッパー
+        if use_gemini_3pass or use_claude:
+            idx, text = await gen_func(
+                client, semaphore,
+                d["disease_name"], d.get("category", ""),
+                DISEASE_FINDINGS_V2_PROMPT, task_idx, len(remaining),
+            )
+            if text:
+                async with save_lock:
+                    diseases[orig_idx]["findings_description"] = text
+                    completed_count[0] += 1
+                    if completed_count[0] % 10 == 0:
+                        write_jsonl(DISEASES_JSONL, diseases)
+                        print(f"  === 中間保存 {completed_count[0]}/{len(remaining)}件 (エラー{error_count[0]}件) ===")
+            else:
+                error_count[0] += 1
+            return text is not None
+
+        # 新方式: sections_dict を返す
+        idx, sections_dict = await gen_func(
             client, semaphore,
             d["disease_name"], d.get("category", ""),
             DISEASE_FINDINGS_V2_PROMPT, task_idx, len(remaining),
+            target_sections=target_sections,
         )
-        if text:
+        if sections_dict:
             async with save_lock:
-                diseases[orig_idx]["findings_description"] = text
+                # fd_* フィールドに書き込み
+                for fd_key, fd_text in sections_dict.items():
+                    diseases[orig_idx][fd_key] = fd_text
+                # _gen_meta 更新
+                meta = diseases[orig_idx].get("_gen_meta", {})
+                for fd_key, fd_text in sections_dict.items():
+                    meta[fd_key] = {"model": model_label, "date": today, "chars": len(fd_text)}
+                diseases[orig_idx]["_gen_meta"] = meta
+                # 後方互換: findings_description を再組み立て
+                diseases[orig_idx]["findings_description"] = assemble_findings_description(
+                    diseases[orig_idx], DISEASE_FD_KEYS, DISEASE_FD_TITLES)
                 completed_count[0] += 1
                 if completed_count[0] % 10 == 0:
                     write_jsonl(DISEASES_JSONL, diseases)
                     print(f"  === 中間保存 {completed_count[0]}/{len(remaining)}件 (エラー{error_count[0]}件) ===")
         else:
             error_count[0] += 1
-        return text is not None
+        return sections_dict is not None
 
     tasks = [
         gen_and_save(orig_idx, d, idx)
@@ -1488,22 +1547,40 @@ async def _generate_disease_findings(client, semaphore, dry_run, force=False, us
     print(f"疾患 findings_description: {success}/{len(remaining)}件 生成完了 (エラー{error_count[0]}件)")
 
 
-async def _generate_test_findings(client, semaphore, dry_run, force=False, use_vertex=False):
-    """検査の findings_description を一括生成。
+async def _generate_test_findings(client, semaphore, dry_run, force=False, use_vertex=False, section=None):
+    """検査の findings_description をセクション別に一括生成。
     use_vertex=True: Vertex AI 6パス並列（TEST_SECTION_PROMPTS使用）
     force=True: 既存のfindings_descriptionをfindings_description_v1にバックアップして上書き
+    --section: 特定セクションのみ再生成
     中間保存: 10件完了ごとにJSONLを書き出し"""
     tests = read_jsonl(TESTS_JSONL)
 
+    # --section 指定時のターゲットセクション解決
+    target_sections = None
+    if section:
+        if section not in TEST_SECTION_MAP:
+            print(f"エラー: 不明な検査セクション '{section}'。有効値: {', '.join(TEST_SECTION_MAP.keys())}")
+            return
+        target_sections = [TEST_SECTION_MAP[section]]
+        target_fd_key = TEST_FD_KEYS[target_sections[0]]
+        print(f"セクション指定: {section} (T{target_sections[0]+1}, {target_fd_key})")
+
     if force:
-        remaining = [(i, t) for i, t in enumerate(tests)]
-        print(f"検査: {len(tests)}件（全件再生成）")
-        # 既存のfindings_descriptionをv1としてバックアップ
-        for _, t in remaining:
-            if t.get("findings_description") and not t.get("findings_description_v1"):
-                t["findings_description_v1"] = t["findings_description"]
-        write_jsonl(TESTS_JSONL, tests)
-        print(f"  既存findings_descriptionをfindings_description_v1にバックアップ完了")
+        if section:
+            remaining = [(i, t) for i, t in enumerate(tests)]
+            print(f"検査: {len(tests)}件（セクション '{section}' を全件再生成）")
+        else:
+            remaining = [(i, t) for i, t in enumerate(tests)]
+            print(f"検査: {len(tests)}件（全件再生成）")
+            # 既存のfindings_descriptionをv1としてバックアップ
+            for _, t in remaining:
+                if t.get("findings_description") and not t.get("findings_description_v1"):
+                    t["findings_description_v1"] = t["findings_description"]
+            write_jsonl(TESTS_JSONL, tests)
+            print(f"  既存findings_descriptionをfindings_description_v1にバックアップ完了")
+    elif section:
+        remaining = [(i, t) for i, t in enumerate(tests) if not t.get(target_fd_key)]
+        print(f"検査: {len(tests)}件中 {len(remaining)}件が {target_fd_key} 未生成")
     else:
         remaining = [(i, t) for i, t in enumerate(tests) if not t.get("findings_description")]
         print(f"検査: {len(tests)}件中 {len(remaining)}件が未生成")
@@ -1513,32 +1590,44 @@ async def _generate_test_findings(client, semaphore, dry_run, force=False, use_v
 
     if use_vertex:
         gen_func = _gen_test_findings_one_vertex_6pass
-        model_label = f"Vertex AI {VERTEX_MODEL} test-6-pass"
+        model_label = f"Vertex AI {VERTEX_MODEL}"
     else:
         gen_func = _gen_test_findings_one_lemon_6pass
-        model_label = f"Lemon API {LLM_MODEL} test-6-pass"
+        model_label = f"Lemon API {LLM_MODEL}"
     print(f"モデル: {model_label} / 並行数: {semaphore._value}")
 
     save_lock = asyncio.Lock()
     completed_count = [0]
     error_count = [0]
+    today = date.today().isoformat()
 
     async def gen_and_save(orig_idx, t, task_idx):
-        idx, text = await gen_func(
+        idx, sections_dict = await gen_func(
             client, semaphore,
             t["test_name"], t.get("category", ""),
             TEST_FINDINGS_PROMPT, task_idx, len(remaining),
+            target_sections=target_sections,
         )
-        if text:
+        if sections_dict:
             async with save_lock:
-                tests[orig_idx]["findings_description"] = text
+                # fd_* フィールドに書き込み
+                for fd_key, fd_text in sections_dict.items():
+                    tests[orig_idx][fd_key] = fd_text
+                # _gen_meta 更新
+                meta = tests[orig_idx].get("_gen_meta", {})
+                for fd_key, fd_text in sections_dict.items():
+                    meta[fd_key] = {"model": model_label, "date": today, "chars": len(fd_text)}
+                tests[orig_idx]["_gen_meta"] = meta
+                # 後方互換: findings_description を再組み立て
+                tests[orig_idx]["findings_description"] = assemble_findings_description(
+                    tests[orig_idx], TEST_FD_KEYS, TEST_FD_TITLES)
                 completed_count[0] += 1
                 if completed_count[0] % 10 == 0:
                     write_jsonl(TESTS_JSONL, tests)
                     print(f"  === 中間保存 {completed_count[0]}/{len(remaining)}件 (エラー{error_count[0]}件) ===")
         else:
             error_count[0] += 1
-        return text is not None
+        return sections_dict is not None
 
     tasks = [
         gen_and_save(orig_idx, t, idx)
@@ -1552,46 +1641,51 @@ async def _generate_test_findings(client, semaphore, dry_run, force=False, use_v
 
 
 async def cmd_findings_desc_async(args):
-    """疾患・検査の findings_description を並行生成（同一所見空間）"""
+    """疾患・検査の findings_description を並行生成（同一所見空間）
+    デフォルト: Vertex AI gemini-3-pro-preview"""
     force = getattr(args, 'force', False)
     use_claude = getattr(args, 'claude', False)
-    use_gemini_3pass = getattr(args, 'gemini3pass', False)
-    use_vertex = getattr(args, 'vertex', False)
+    use_lemon = getattr(args, 'lemon', False)
+    section = getattr(args, 'section', None)
     target = args.target
 
-    # Vertex AIクライアントは共有（diseases/tests両方で使う可能性）
-    vertex_client = None
-    if use_vertex:
-        from google import genai
-        vertex_client = genai.Client(
-            project=VERTEX_PROJECT,
-            location=VERTEX_LOCATION,
-            vertexai=True,
-        )
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = VERTEX_SA_KEY
+    # Vertex AIクライアント初期化（デフォルト）
+    from google import genai
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = VERTEX_SA_KEY
+    vertex_client = genai.Client(
+        project=VERTEX_PROJECT,
+        location=VERTEX_LOCATION,
+        vertexai=True,
+    )
 
     coros = []
     if target in ("diseases", "all"):
-        if use_vertex:
-            disease_sem = asyncio.Semaphore(args.concurrency)
-            coros.append(_generate_disease_findings(vertex_client, disease_sem, args.dry_run, force=force, use_vertex=True))
-        elif use_claude:
+        if use_claude:
             disease_client = AsyncOpenAI(api_key=CLAUDE_API_KEY, base_url=CLAUDE_BASE_URL)
             disease_sem = asyncio.Semaphore(args.concurrency)
-            coros.append(_generate_disease_findings(disease_client, disease_sem, args.dry_run, force=force, use_claude=True))
-        else:
+            coros.append(_generate_disease_findings(disease_client, disease_sem, args.dry_run,
+                                                    force=force, use_claude=True, section=section))
+        elif use_lemon:
             disease_client = AsyncOpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
             disease_sem = asyncio.Semaphore(args.concurrency)
-            coros.append(_generate_disease_findings(disease_client, disease_sem, args.dry_run, force=force, use_gemini_3pass=use_gemini_3pass))
+            coros.append(_generate_disease_findings(disease_client, disease_sem, args.dry_run,
+                                                    force=force, section=section))
+        else:
+            # デフォルト: Vertex AI
+            disease_sem = asyncio.Semaphore(args.concurrency)
+            coros.append(_generate_disease_findings(vertex_client, disease_sem, args.dry_run,
+                                                    force=force, use_vertex=True, section=section))
 
     if target in ("tests", "all"):
-        if use_vertex:
-            test_sem = asyncio.Semaphore(args.concurrency)
-            coros.append(_generate_test_findings(vertex_client, test_sem, args.dry_run, force=force, use_vertex=True))
-        else:
+        if use_lemon:
             test_client = AsyncOpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
             test_sem = asyncio.Semaphore(args.concurrency)
-            coros.append(_generate_test_findings(test_client, test_sem, args.dry_run))
+            coros.append(_generate_test_findings(test_client, test_sem, args.dry_run, section=section))
+        else:
+            # デフォルト: Vertex AI
+            test_sem = asyncio.Semaphore(args.concurrency)
+            coros.append(_generate_test_findings(vertex_client, test_sem, args.dry_run,
+                                                 force=force, use_vertex=True, section=section))
 
     await asyncio.gather(*coros)
 
@@ -1675,12 +1769,12 @@ def main():
                          help="既存のfindings_descriptionを上書き再生成")
     p_fdesc.add_argument("--claude", action="store_true",
                          help="Claude Opus 4.6 APIを使用（高品質・ストリーミング）")
-    p_fdesc.add_argument("--gemini3pass", action="store_true",
-                         help="Gemini Pro 3パス方式（embedding最適化、~10000字）")
-    p_fdesc.add_argument("--vertex", action="store_true",
-                         help="Vertex AI gemini-3-pro-preview 6パス方式")
+    p_fdesc.add_argument("--lemon", action="store_true",
+                         help="Lemon API経由（レガシー、非推奨）")
     p_fdesc.add_argument("--concurrency", type=int, default=50,
                          help="最大並行数（デフォルト: 50、Claude使用時は10推奨）")
+    p_fdesc.add_argument("--section", type=str, default=None,
+                         help="特定セクションのみ再生成 (疾患: background,typical,atypical,physical,tests,differential,pathophysiology / 検査: indications,major_patterns,additional_patterns,differential,pitfalls,urgency_timeline)")
 
     p_quality = subparsers.add_parser("quality", help="検査quality_description生成")
     p_quality.add_argument("--dry-run", action="store_true",

@@ -1,9 +1,11 @@
 """
 VeSMed - ベクトルDB構築スクリプト
-findings_descriptionを臨床ドメイン単位で6チャンクに分割し、
+fd_*フィールド（セクション分離格納）を直接読み取り、
 各チャンクをEmbeddingしてChromaDBに格納する。
 
-6-Domain Chunking:
+fd_*がない場合はfindings_descriptionからチャンク分割にフォールバック。
+
+6-Domain Embedding:
   1. 背景・疫学・リスク (Context)
   2. 典型主訴・病歴 (Subjective-Typical)
   3. 非典型・ピットフォール (Subjective-Atypical)
@@ -37,6 +39,20 @@ DOMAINS = [
 
 EMBED_DOMAINS = [d[0] for d in DOMAINS if d[1]]  # embed対象
 
+# fd_* フィールド → ドメイン名のマッピング
+FD_TO_DOMAIN = {
+    "fd_background":      "background",
+    "fd_typical":         "typical",
+    "fd_atypical":        "atypical",
+    "fd_physical":        "physical",
+    "fd_tests":           "tests",
+    "fd_differential":    "differential",
+    "fd_pathophysiology": "pathophysiology",
+}
+
+# embed対象の fd_* キー
+EMBED_FD_KEYS = [k for k, v in FD_TO_DOMAIN.items() if v != "differential"]
+
 
 def load_diseases(jsonl_path):
     """diseases.jsonlを読み込んでリストで返す"""
@@ -53,7 +69,7 @@ def load_diseases(jsonl_path):
     return diseases
 
 
-# ─── 6-Domain チャンカー ───
+# ─── レガシーチャンカー（フォールバック用） ───
 
 def _is_header_line(stripped: str) -> bool:
     """ヘッダー行かどうか判定（箇条書き・インデント行を除外）"""
@@ -61,7 +77,6 @@ def _is_header_line(stripped: str) -> bool:
         return False
     if stripped.startswith("#") or stripped.startswith("■") or stripped.startswith("【"):
         return True
-    # 短いスタンドアロン行（箇条書きでない）
     if (not stripped.startswith("-") and not stripped.startswith("*")
             and not stripped.startswith(" ") and len(stripped) < 100):
         return True
@@ -70,13 +85,10 @@ def _is_header_line(stripped: str) -> bool:
 
 def chunk_into_domains(text: str) -> dict:
     """
-    findings_descriptionを7つの臨床ドメインに分割。
-    セクション順序は固定: S1→S2→S3→S4→S5→S6(鑑別)→S7(病態生理)
-    鑑別キーはembedding空間から排除。
-    順序依存を緩和: S4/S5はS3未検出でも独立検出可能。
+    findings_descriptionを7つの臨床ドメインに分割（レガシーフォールバック用）。
+    fd_*フィールドが存在する場合はこの関数は呼ばれない。
     """
     lines = text.split("\n")
-    # (line_idx, domain_name) のリスト
     boundaries = [(0, "background")]
 
     found = {d: False for d in ["typical", "atypical", "physical", "tests",
@@ -87,30 +99,25 @@ def chunk_into_domains(text: str) -> dict:
         if not s or not _is_header_line(s):
             continue
 
-        # S2: 典型来院像（「非典型」を含む行は除外）
         if (not found["typical"]
                 and ("主訴" in s or "典型来院像" in s or "来院像" in s)
                 and "非典型" not in s and "ピットフォール" not in s):
             boundaries.append((i, "typical"))
             found["typical"] = True
 
-        # S3: 非典型・ピットフォール
         elif (not found["atypical"] and found["typical"]
               and ("非典型" in s or "ピットフォール" in s
                    or "見逃し" in s or "誤診" in s)):
             boundaries.append((i, "atypical"))
             found["atypical"] = True
 
-        # S4: バイタル・身体所見（S3未検出でもS2の後で検出可能）
         elif (not found["physical"] and found["typical"]
               and ("バイタルサイン" in s or ("身体所見" in s and len(s) < 80))):
-            # S3が未検出なら、ここまでをS2+S3統合としてS4開始
             if not found["atypical"]:
-                found["atypical"] = True  # S3スキップ（S2に含まれる）
+                found["atypical"] = True
             boundaries.append((i, "physical"))
             found["physical"] = True
 
-        # S5: 検査所見（S4未検出でもS2の後で検出可能）
         elif (not found["tests"] and found["typical"]
               and ("検査所見" in s or "検査パターン" in s)):
             if not found["atypical"]:
@@ -120,7 +127,6 @@ def chunk_into_domains(text: str) -> dict:
             boundaries.append((i, "tests"))
             found["tests"] = True
 
-        # S6: 鑑別キー（排除対象）
         elif (not found["differential"]
               and ("鑑別キー" in s or "主要な鑑別疾患" in s or "鑑別ポイント" in s)):
             if not found["tests"]:
@@ -128,13 +134,11 @@ def chunk_into_domains(text: str) -> dict:
             boundaries.append((i, "differential"))
             found["differential"] = True
 
-        # S7: 病態生理
         elif (not found["pathophysiology"]
               and ("病態生理" in s or "発症メカニズム" in s)):
             boundaries.append((i, "pathophysiology"))
             found["pathophysiology"] = True
 
-    # boundaries → domain dict
     sections = {}
     for idx in range(len(boundaries)):
         start = boundaries[idx][0]
@@ -145,6 +149,26 @@ def chunk_into_domains(text: str) -> dict:
             sections[domain] = section_text
 
     return sections
+
+
+def _get_sections_for_disease(d: dict) -> dict:
+    """疾患レコードからドメイン別セクションを取得。
+    fd_*フィールドがあればそれを使い、なければchunk_into_domainsにフォールバック。"""
+    # fd_*フィールドチェック
+    has_fd = any(d.get(k) for k in EMBED_FD_KEYS)
+    if has_fd:
+        sections = {}
+        for fd_key, domain in FD_TO_DOMAIN.items():
+            text = d.get(fd_key, "")
+            if text:
+                sections[domain] = text
+        return sections
+
+    # フォールバック: findings_descriptionからチャンク分割
+    desc = d.get("findings_description", "")
+    if not desc:
+        return {}
+    return chunk_into_domains(desc)
 
 
 def get_embeddings(client, texts, model=EMBEDDING_MODEL):
@@ -172,14 +196,22 @@ def build_index():
     disease_count = 0
     domain_stats = {d: 0 for d in EMBED_DOMAINS}
     skipped_diff = 0
+    fd_direct = 0
+    fd_fallback = 0
 
     for i, d in enumerate(diseases):
-        desc = d.get("findings_description", "")
-        if not desc:
-            print(f"  警告: {d.get('disease_name', '不明')} にfindings_descriptionがありません、スキップ")
+        has_fd = any(d.get(k) for k in EMBED_FD_KEYS)
+        sections = _get_sections_for_disease(d)
+
+        if not sections:
+            print(f"  警告: {d.get('disease_name', '不明')} にデータがありません、スキップ")
             continue
 
-        sections = chunk_into_domains(desc)
+        if has_fd:
+            fd_direct += 1
+        else:
+            fd_fallback += 1
+
         disease_count += 1
 
         for domain in EMBED_DOMAINS:
@@ -201,6 +233,7 @@ def build_index():
             skipped_diff += 1
 
     print(f"Embedding対象: {disease_count}疾患 → {len(texts)}チャンク")
+    print(f"  データソース: fd_*直読み {fd_direct}件 / レガシーフォールバック {fd_fallback}件")
     print(f"  ドメイン別:")
     for domain in EMBED_DOMAINS:
         label = next(d[2] for d in DOMAINS if d[0] == domain)
