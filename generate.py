@@ -21,8 +21,8 @@ from config import (
 )
 
 # Vertex AI設定（メタデータ生成用 — pro モデル）
-VERTEX_SA_KEY = os.path.join(os.path.dirname(__file__), "cgdhgjhg978@gmail.com vertex.json")
-VERTEX_PROJECT = "project-1891a118-c835-4ef0-b8b"
+VERTEX_SA_KEY = os.path.join(os.path.dirname(__file__), "thermal-outlet-483512-m4-8ec9647654b6.json")
+VERTEX_PROJECT = "thermal-outlet-483512-m4"
 VERTEX_LOCATION = "global"
 VERTEX_MODEL = "gemini-3-pro-preview"
 

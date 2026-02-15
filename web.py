@@ -124,10 +124,13 @@ def analyze_patient(input_text):
     print(f"[TIMING] === TOTAL: {t3-t0:.1f}s ===")
 
     n_results = len(result_lines)
-    n_total = len(eng.disease_db)
-    n_filtered = n_total - len(candidates)
-    filter_info = f" / {n_filtered}疾患除外" if n_filtered > 0 else ""
-    neg_info = f" / 陰性所見{len(negative_findings)}件" if negative_findings else ""
+    n_excluded = len(exclusion_reasons)
+    filter_info = f" / {n_excluded}疾患除外" if n_excluded > 0 else ""
+    if negative_findings:
+        neg_names = "、".join(negative_findings)
+        neg_info = f" / 陰性所見{len(negative_findings)}件（{neg_names}）"
+    else:
+        neg_info = ""
     status = f"分析完了 / {len(candidates)}疾患{filter_info}{neg_info} / 検査結果{n_results}件"
 
     # 除外疾患テーブル
