@@ -99,12 +99,14 @@ class VeSMedEngine:
                         continue
 
         # 類似度行列（疾患×検査）をembeddingで計算
-        self.sim_matrix = None    # (N_diseases, N_tests) ndarray
+        self.sim_matrix = None    # (N_diseases, N_tests) ndarray — 鑑別用（Part A/E）
+        self.sim_matrix_confirm = None  # (N_diseases, N_tests) ndarray — 確認用（Part B/C）
         self.disease_embs_normed = None  # (N_diseases, dim) 正規化済み疾患embedding（直接法用）
         self.disease_idx = {}     # disease_name → row index
         self.test_idx = {}        # test_name → col index
         self.test_names = []      # col順の検査名リスト
         self._compute_similarity_matrix()
+        self._load_confirm_matrix()
 
         # 検査の質（2Q: Value + Feasibility）
         self.test_quality = {}  # test_name → {"value": float, "feasibility": float}
@@ -261,11 +263,12 @@ class VeSMedEngine:
         self.disease_embs_normed = disease_embs / d_norms
         print(f"[疾患Emb] {self.disease_embs_normed.shape[0]}疾患の正規化embedding保持")
 
-        # 仮説テキスト構築: カスタム仮説テキスト or "検査名 異常"
+        # 仮説テキスト構築: hypothesis_screen (Phase 2) > hypothesis_text (旧) > "検査名 異常"
         hypothesis_texts = []
         for tname in self.test_names:
-            custom = self.test_db.get(tname, {}).get("hypothesis_text")
-            hypothesis_texts.append(custom if custom else f"{tname} 異常")
+            entry = self.test_db.get(tname, {})
+            screen = entry.get("hypothesis_screen") or entry.get("hypothesis_text")
+            hypothesis_texts.append(screen if screen else f"{tname} 異常")
 
         # 仮説テキストのハッシュ（内容変更検知）
         import hashlib
@@ -305,6 +308,35 @@ class VeSMedEngine:
             hypothesis_hash=np.array(h_hash),
         )
         print(f"[sim_matrix] 仮説方式 {self.sim_matrix.shape} 計算・キャッシュ完了")
+
+    def _load_confirm_matrix(self):
+        """
+        Dual sim_matrix: 確認用行列 (sim_matrix_confirm) の読み込み。
+        build_confirm_matrix.py で事前生成された sim_matrix_confirm.npz を読み込む。
+        Part B (致死除外) と Part C (確認力) で使用。
+
+        未生成の場合は sim_matrix（鑑別用）にフォールバック。
+        """
+        confirm_file = os.path.join(DATA_DIR, "sim_matrix_confirm.npz")
+        if not os.path.exists(confirm_file):
+            print("[sim_matrix_confirm] ファイル未生成 → sim_matrix(鑑別用)にフォールバック")
+            self.sim_matrix_confirm = self.sim_matrix
+            return
+
+        data = np.load(confirm_file, allow_pickle=True)
+        cached_diseases = list(data["disease_names"])
+        cached_tests = list(data["test_names"])
+
+        # 疾患・検査の順序が一致するか確認
+        disease_names = sorted(self.disease_idx.keys())
+        if cached_diseases == disease_names and cached_tests == self.test_names:
+            self.sim_matrix_confirm = data["sim_matrix"]
+            print(f"[sim_matrix_confirm] 確認用行列読込 {self.sim_matrix_confirm.shape}")
+        else:
+            print(f"[sim_matrix_confirm] 疾患/検査リスト不一致 → sim_matrixにフォールバック")
+            print(f"  confirm: {len(cached_diseases)}疾患×{len(cached_tests)}検査")
+            print(f"  screen:  {len(disease_names)}疾患×{len(self.test_names)}検査")
+            self.sim_matrix_confirm = self.sim_matrix
 
     def _batch_embed(self, texts, batch_size=50, max_workers=40):
         """テキストリストをバッチ並行でembedding。ndarray (N, dim) を返す。"""
@@ -1666,7 +1698,9 @@ class VeSMedEngine:
         血液培養のような特異的検査はcluster_mu >> global_mu → 差分大 → 浮上。
         ハイパーパラメータなし。
         """
-        if self.sim_matrix is None or len(self.test_names) == 0:
+        # Dual sim_matrix: Part Cは確認用行列を使用
+        sm = self.sim_matrix_confirm if self.sim_matrix_confirm is not None else self.sim_matrix
+        if sm is None or len(self.test_names) == 0:
             return []
 
         n_tests = len(self.test_names)
@@ -1685,7 +1719,7 @@ class VeSMedEngine:
         if w_sum > 0:
             w = w / w_sum
 
-        # sim_matrix行を取得
+        # sim_matrix_confirm行を取得
         disease_rows = []
         for c in candidates:
             row = self.disease_idx.get(c["disease_name"])
@@ -1694,12 +1728,12 @@ class VeSMedEngine:
 
         valid_mask = disease_rows >= 0
         sim_sub = np.zeros((len(candidates), n_tests))
-        sim_sub[valid_mask] = self.sim_matrix[disease_rows[valid_mask]]
+        sim_sub[valid_mask] = sm[disease_rows[valid_mask]]
 
         # クラスタ加重平均 vs 全疾患背景平均
         w_col = w[:, np.newaxis]
         cluster_mu = (w_col * sim_sub).sum(axis=0)  # (N_tests,)
-        global_mu = self.sim_matrix.mean(axis=0)      # (N_tests,)
+        global_mu = sm.mean(axis=0)                   # (N_tests,)
         confirm = cluster_mu - global_mu               # クラスタ特異度
 
         # risk_relevance計算用
@@ -1829,7 +1863,9 @@ class VeSMedEngine:
         noveltyで既知情報を連続的に割引。
         """
 
-        if self.sim_matrix is None or len(self.test_names) == 0:
+        # Dual sim_matrix: Part Bは確認用行列を使用
+        sm = self.sim_matrix_confirm if self.sim_matrix_confirm is not None else self.sim_matrix
+        if sm is None or len(self.test_names) == 0:
             return []
 
         n_tests = len(self.test_names)
@@ -1848,7 +1884,7 @@ class VeSMedEngine:
         # cp = critical_weight * similarity (N_candidates,)
         cp = critical_w * sims
 
-        # sim_matrix行を取得
+        # sim_matrix_confirm行を取得
         disease_rows = []
         for c in candidates:
             row = self.disease_idx.get(c["disease_name"])
@@ -1857,7 +1893,7 @@ class VeSMedEngine:
 
         valid_mask = disease_rows >= 0
         sim_sub = np.zeros((len(candidates), n_tests))
-        sim_sub[valid_mask] = self.sim_matrix[disease_rows[valid_mask]]
+        sim_sub[valid_mask] = sm[disease_rows[valid_mask]]
 
         # weighted_sim = cp[:, None] * sim_sub → (N_candidates, N_tests)
         weighted_sim = cp[:, np.newaxis] * sim_sub
