@@ -178,6 +178,7 @@ def analyze_patient(input_text, state):
     auto_neg = [f["item"] for f in hpe_findings if f["polarity"] < 0]
 
     state = {
+        "input_text": input_text,
         "candidates_base": candidates_base,
         "novelty_tests": novelty.tolist(),
         "exclusion_reasons": exclusion_reasons,
@@ -208,14 +209,14 @@ def analyze_patient(input_text, state):
 def update_hpe_feedback(pos_items, neg_items, state):
     """
     ユーザーが直接選択したHPE所見を反映。
-    LLM不要 — 行列演算のみで疾患重み更新 + 全Part再ランキング。
+    re-embed方式: 元テキスト + HPE所見 → 再embed → 疾患ベクトル更新 → 全Part再ランキング。
     """
+    import time as _time
     eng = init_engine()
 
     if not state or "candidates_base" not in state:
         return [gr.update()] * 10 + [state, pos_items, neg_items]
 
-    candidates = copy.deepcopy(state["candidates_base"])
     novelty_tests = np.array(state["novelty_tests"])
     exclusion_reasons = state["exclusion_reasons"]
 
@@ -239,11 +240,43 @@ def update_hpe_feedback(pos_items, neg_items, state):
     n_neg = sum(1 for f in hpe_findings if f["polarity"] < 0)
     print(f"[HPEフィードバック] 陽性{n_pos}件 + 陰性{n_neg}件")
 
+    # Re-embed: 元テキスト + HPE所見でベクトル更新
+    input_text = state.get("input_text", "")
+    re_embedded = False
+
+    if input_text and hpe_findings:
+        # 陽性所見のみembeddingに追加（embeddingは否定を区別できない）
+        # 陰性所見はupdate_from_hpeの行列ペナルティで処理
+        pos_names = [f["item"] for f in hpe_findings if f["polarity"] > 0]
+        if pos_names:
+            augmented_text = input_text + "\n" + "、".join(pos_names)
+        else:
+            augmented_text = input_text
+
+        try:
+            t0 = _time.time()
+            candidates = eng.search_diseases(augmented_text)
+            candidates = eng.compute_priors(candidates)
+            # 初回分析の除外リストを適用
+            excluded_names = {r["disease_name"] for r in exclusion_reasons}
+            if excluded_names:
+                candidates = [c for c in candidates if c["disease_name"] not in excluded_names]
+            re_embedded = True
+            t1 = _time.time()
+            print(f"[HPEフィードバック] re-embed完了 {t1-t0:.1f}s / {len(candidates)}候補")
+        except Exception as e:
+            print(f"[HPEフィードバック] re-embed失敗、matrix方式にフォールバック: {e}")
+            candidates = copy.deepcopy(state["candidates_base"])
+    else:
+        candidates = copy.deepcopy(state["candidates_base"])
+
+    # HPE行列更新（re-embed後の候補に対して適用）
     if hpe_findings:
         candidates = eng.update_from_hpe(candidates, hpe_findings)
 
     tables = _rerank(eng, candidates, novelty_tests, novelty_hpe, exclusion_reasons)
-    status = f"HPE更新完了 / 陽性{n_pos}件 + 陰性{n_neg}件 反映"
+    method = "re-embed" if re_embedded else "matrix"
+    status = f"HPE更新完了 / 陽性{n_pos}件 + 陰性{n_neg}件 反映（{method}）"
 
     return (
         status,

@@ -229,7 +229,9 @@
 {"item_name": "心窩部圧痛", "category": "PE", "subcategory": "腹部診察", "hypothesis": "心窩部圧痛 上腹部圧痛 胃十二指腸 膵臓 上腹部臓器炎症", "instruction": "心窩部を圧迫→圧痛の有無と程度を評価"}
 {"item_name": "右上腹部圧痛", "category": "PE", "subcategory": "腹部診察", "hypothesis": "右上腹部圧痛 右季肋部圧痛 胆嚢 肝臓 肝胆道系炎症", "instruction": "右上腹部を圧迫→圧痛あれば肝胆道系疾患"}
 {"item_name": "筋性防御", "category": "PE", "subcategory": "腹部診察", "hypothesis": "筋性防御 guarding 腹壁緊張 板状硬 腹膜刺激 管腔臓器破綻", "instruction": "腹壁の不随意筋緊張を触診→板状硬なら汎発性腹膜炎"}
-{"item_name": "腸蠕動音", "category": "PE", "subcategory": "腹部診察", "hypothesis": "腸蠕動音 亢進 金属音 減弱 消失 腸管通過障害 腸管運動異常", "instruction": "1分以上聴診→亢進（機械的イレウス）・消失（麻痺性）"}
+{"item_name": "腸蠕動音亢進/金属音", "category": "PE", "subcategory": "腹部診察", "hypothesis": "腸蠕動音亢進 金属音 グル音増加 高調性腸雑音 蠕動亢進 腸管内容物通過障害 腸管狭窄部の乱流音", "instruction": "1分以上聴診→グル音頻回・高調（金属音）なら機械的閉塞を示唆"}
+{"item_name": "腸蠕動音減弱", "category": "PE", "subcategory": "腹部診察", "hypothesis": "腸蠕動音減弱 グル音減少 蠕動低下 腸管運動抑制 5回/分未満 腸管壁の活動性低下", "instruction": "1分以上聴診→グル音まばら（5回/分未満）なら腸管運動低下"}
+{"item_name": "腸蠕動音消失", "category": "PE", "subcategory": "腹部診察", "hypothesis": "腸蠕動音消失 グル音消失 5分聴診で無音 完全な蠕動停止 腸管壁運動完全停止 腹腔内臓器炎症波及", "instruction": "5分以上聴診して無音→完全な蠕動停止を示唆、外科的評価を検討"}
 {"item_name": "肝腫大", "category": "PE", "subcategory": "腹部診察", "hypothesis": "肝腫大 肝臓触知 肝下縁 肝実質病変 静脈うっ滞 うっ血", "instruction": "右肋骨弓下で肝下縁を触知→2横指以上で肝腫大"}
 {"item_name": "脾腫", "category": "PE", "subcategory": "腹部診察", "hypothesis": "脾腫 脾臓触知 感染症 血液疾患 門脈圧亢進 網内系過形成", "instruction": "左側臥位で脾臓を触知→触知可能なら脾腫"}
 {"item_name": "腹水", "category": "PE", "subcategory": "腹部診察", "hypothesis": "腹水 波動 shifting dullness 腹部膨満 門脈圧亢進 低アルブミン血症", "instruction": "波動・shifting dullnessで腹水の有無を評価"}
