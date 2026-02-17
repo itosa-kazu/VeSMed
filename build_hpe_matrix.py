@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 sys.path.insert(0, os.path.dirname(__file__))
 from config import (
     EMBEDDING_API_KEY, EMBEDDING_BASE_URL, EMBEDDING_MODEL,
-    DISEASES_JSONL, CHROMA_DIR, DATA_DIR,
+    DISEASES_JSONL, DATA_DIR,
 )
 
 HPE_JSONL = os.path.join(DATA_DIR, "hpe_items.jsonl")
@@ -44,28 +44,12 @@ def load_jsonl(path):
 
 
 def load_disease_embeddings():
-    """ChromaDBから疾患embeddingを読み込む。"""
-    import chromadb
-    client = chromadb.PersistentClient(path=CHROMA_DIR)
-    collection = client.get_collection("diseases")
-    all_data = collection.get(include=["embeddings", "metadatas"])
-
-    disease_chunk_embs = defaultdict(list)
-    for j in range(len(all_data["ids"])):
-        dname = all_data["metadatas"][j].get("disease_name", "")
-        if dname:
-            disease_chunk_embs[dname].append(all_data["embeddings"][j])
-
-    disease_names = sorted(disease_chunk_embs.keys())
-    embs_list = []
-    for name in disease_names:
-        chunks = np.array(disease_chunk_embs[name], dtype=np.float32)
-        embs_list.append(chunks.mean(axis=0))
-    disease_embs = np.array(embs_list, dtype=np.float32)
-
-    d_norms = np.linalg.norm(disease_embs, axis=1, keepdims=True)
-    d_norms[d_norms == 0] = 1.0
-    return disease_names, disease_embs / d_norms
+    """disease_embs.npzからMEAN集約済み疾患embeddingを読み込む。"""
+    embs_file = os.path.join(DATA_DIR, "disease_embs.npz")
+    if not os.path.exists(embs_file):
+        raise FileNotFoundError(f"{embs_file} が見つかりません。index.pyを先に実行してください。")
+    data = np.load(embs_file, allow_pickle=True)
+    return list(data["disease_names"]), data["disease_embs_normed"].astype(np.float32)
 
 
 def batch_embed(texts, batch_size=50, max_workers=10):

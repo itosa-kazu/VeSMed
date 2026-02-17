@@ -10,7 +10,6 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
-import chromadb
 from openai import OpenAI
 from config import (
     LLM_API_KEY, LLM_BASE_URL, LLM_MODEL,
@@ -19,7 +18,7 @@ from config import (
     VERTEX_SA_KEY, VERTEX_PROJECT, VERTEX_LOCATION, VERTEX_MODEL,
     EMBEDDING_API_KEY, EMBEDDING_BASE_URL, EMBEDDING_MODEL,
     DISEASES_JSONL, TESTS_JSONL, FINDINGS_JSONL, HPE_ITEMS_JSONL,
-    CHROMA_DIR, DATA_DIR,
+    DATA_DIR,
 )
 
 
@@ -38,9 +37,8 @@ class VeSMedEngine:
         self.llm_fallback_client = OpenAI(api_key=LLM_FALLBACK_API_KEY, base_url=LLM_FALLBACK_BASE_URL, timeout=30)
         self.embed_client = OpenAI(api_key=EMBEDDING_API_KEY, base_url=EMBEDDING_BASE_URL)
 
-        # ChromaDB接続
-        self.chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
-        self.collection = self.chroma_client.get_collection("diseases")
+        # 疾患embedding読込（MEAN-chunk統一、NPZから）
+        self._load_disease_embeddings()
 
         # 検査名 名寄せマップ読み込み
         self.test_name_map = {}
@@ -101,8 +99,7 @@ class VeSMedEngine:
         # 類似度行列（疾患×検査）をembeddingで計算
         self.sim_matrix = None    # (N_diseases, N_tests) ndarray — 鑑別用（Part A/E）
         self.sim_matrix_confirm = None  # (N_diseases, N_tests) ndarray — 確認用（Part B/C）
-        self.disease_embs_normed = None  # (N_diseases, dim) 正規化済み疾患embedding（直接法用）
-        self.disease_idx = {}     # disease_name → row index
+        # disease_embs_normed, disease_idx は _load_disease_embeddings() で設定済み
         self.test_idx = {}        # test_name → col index
         self.test_names = []      # col順の検査名リスト
         self._compute_similarity_matrix()
@@ -151,6 +148,24 @@ class VeSMedEngine:
         self._last_query_embedding = None
 
     # ----------------------------------------------------------------
+    # 疾患embedding読込（MEAN-chunk統一、NPZから）
+    # ----------------------------------------------------------------
+    def _load_disease_embeddings(self):
+        """disease_embs.npzからMEAN集約済み正規化embeddingを読み込む。"""
+        embs_file = os.path.join(DATA_DIR, "disease_embs.npz")
+        if not os.path.exists(embs_file):
+            print(f"[ERROR] {embs_file} が見つかりません。index.pyを先に実行してください。")
+            self.disease_embs_normed = None
+            self.disease_idx = {}
+            return
+
+        data = np.load(embs_file, allow_pickle=True)
+        self.disease_embs_normed = data["disease_embs_normed"].astype(np.float32)
+        disease_names = list(data["disease_names"])
+        self.disease_idx = {name: i for i, name in enumerate(disease_names)}
+        print(f"[疾患Emb] {self.disease_embs_normed.shape[0]}疾患の正規化embedding読込 (NPZ)")
+
+    # ----------------------------------------------------------------
     # 2Cスコア計算（起動時に1回）
     # ----------------------------------------------------------------
     def _compute_2c_scores(self):
@@ -195,29 +210,24 @@ class VeSMedEngine:
             print(f"[2C] アンカーembedding失敗: {e}")
             return
 
-        # ChromaDBから全疾患のembeddingを取得
-        all_ids = [f"disease_{i}" for i in range(self.collection.count())]
-        batch_size = 100
-        all_embeddings = {}
-        for start in range(0, len(all_ids), batch_size):
-            batch_ids = all_ids[start:start + batch_size]
-            result = self.collection.get(ids=batch_ids, include=["embeddings", "metadatas"])
-            for j, mid in enumerate(result["ids"]):
-                dname = result["metadatas"][j].get("disease_name", "")
-                all_embeddings[dname] = np.array(result["embeddings"][j])
+        # disease_embs_normed（MEAN集約済み）を直接使用
+        if self.disease_embs_normed is None:
+            print("[2C] 疾患embeddingなし、スキップ")
+            return
 
-        # 余弦類似度 → exp重みを計算
-        def cosine_sim(a, b):
+        # アンカーembeddingを正規化
+        for name in anchor_embs:
+            a = anchor_embs[name]
             norm_a = np.linalg.norm(a)
-            norm_b = np.linalg.norm(b)
-            if norm_a == 0 or norm_b == 0:
-                return 0.0
-            return float(np.dot(a, b) / (norm_a * norm_b))
+            if norm_a > 0:
+                anchor_embs[name] = a / norm_a
 
-        for dname, emb in all_embeddings.items():
+        # disease_embs_normed × anchor_emb で一括計算
+        for dname, d_idx in self.disease_idx.items():
+            emb = self.disease_embs_normed[d_idx]
             scores = {}
             for anchor_name, anchor_emb in anchor_embs.items():
-                scores[anchor_name] = cosine_sim(emb, anchor_emb)
+                scores[anchor_name] = float(np.dot(emb, anchor_emb))
             weight = math.exp(scores["critical"] + scores["curable"])
             self.disease_2c[dname] = {**scores, "weight": weight}
 
@@ -243,27 +253,14 @@ class VeSMedEngine:
         ]
         self.test_idx = {name: i for i, name in enumerate(self.test_names)}
 
-        # 疾患リスト構築（6-Domain Chunking対応: チャンクを疾患ごとに平均）
-        from collections import defaultdict
-        all_data = self.collection.get(include=["embeddings", "metadatas"])
-        disease_chunk_embs = defaultdict(list)
-        for j in range(len(all_data["ids"])):
-            dname = all_data["metadatas"][j].get("disease_name", "")
-            if dname:
-                disease_chunk_embs[dname].append(all_data["embeddings"][j])
-        disease_names = sorted(disease_chunk_embs.keys())
-        self.disease_idx = {name: i for i, name in enumerate(disease_names)}
-        disease_embs_list = []
-        for name in disease_names:
-            chunks = np.array(disease_chunk_embs[name], dtype=np.float32)
-            disease_embs_list.append(chunks.mean(axis=0))
-        disease_embs = np.array(disease_embs_list, dtype=np.float32)
+        # disease_embs_normedは_load_disease_embeddings()で読込済み
+        if self.disease_embs_normed is None:
+            print("[sim_matrix] 疾患embeddingなし、スキップ")
+            return
 
-        # 疾患embeddingを正規化して保持（直接法で常に使用）
-        d_norms = np.linalg.norm(disease_embs, axis=1, keepdims=True)
-        d_norms[d_norms == 0] = 1.0
-        self.disease_embs_normed = disease_embs / d_norms
-        print(f"[疾患Emb] {self.disease_embs_normed.shape[0]}疾患の正規化embedding保持")
+        disease_names = [""] * len(self.disease_idx)
+        for dname, idx in self.disease_idx.items():
+            disease_names[idx] = dname
 
         # 仮説テキスト構築: hypothesis_screen (Phase 2) > hypothesis_text (旧) > "検査名 異常"
         hypothesis_texts = []
@@ -1430,9 +1427,7 @@ class VeSMedEngine:
     # ----------------------------------------------------------------
     def _embed_and_search(self, text: str) -> list:
         """
-        単一テキストでChromaDB全件検索 → 疾患ごとにmax-chunk類似度で集約。
-        Semantic Chunking対応: 各疾患がN個のチャンクを持ち、
-        最も類似度が高いチャンクの値をその疾患のスコアとする。
+        MEAN-chunk統一: query_emb × disease_embs_normed.T で全疾患の類似度を一括計算。
         """
         resp = self.embed_client.embeddings.create(
             model=EMBEDDING_MODEL,
@@ -1442,29 +1437,37 @@ class VeSMedEngine:
         # 最後のクエリembeddingを保持（risk_relevance計算用）
         self._last_query_embedding = np.array(query_embedding, dtype=np.float32)
 
-        n_total = self.collection.count()
-        results = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=n_total,
-        )
+        if self.disease_embs_normed is None:
+            return []
 
-        # 疾患ごとにmax-chunk類似度で集約
-        disease_best = {}  # disease_name -> {similarity, category, urgency}
-        if results and results["ids"] and results["ids"][0]:
-            for i, doc_id in enumerate(results["ids"][0]):
-                distance = results["distances"][0][i]
-                similarity = 1.0 - distance
-                metadata = results["metadatas"][0][i]
-                name = metadata.get("disease_name", "")
-                if name not in disease_best or similarity > disease_best[name]["similarity"]:
-                    disease_best[name] = {
-                        "disease_name": name,
-                        "similarity": similarity,
-                        "category": metadata.get("category", ""),
-                        "urgency": metadata.get("urgency", ""),
-                    }
+        # クエリembeddingを正規化
+        q_emb = self._last_query_embedding.copy()
+        q_norm = np.linalg.norm(q_emb)
+        if q_norm > 0:
+            q_emb /= q_norm
 
-        return list(disease_best.values())
+        # 全疾患とのcosine類似度（MEAN-chunk統一）
+        sims = q_emb @ self.disease_embs_normed.T  # (N_diseases,)
+
+        # disease_idx の逆引き
+        idx_to_name = [""] * len(self.disease_idx)
+        for dname, idx in self.disease_idx.items():
+            idx_to_name[idx] = dname
+
+        results = []
+        for i, sim in enumerate(sims):
+            dname = idx_to_name[i]
+            if not dname:
+                continue
+            meta = self.disease_db.get(dname, {})
+            results.append({
+                "disease_name": dname,
+                "similarity": float(sim),
+                "category": meta.get("category", ""),
+                "urgency": meta.get("urgency", ""),
+            })
+
+        return results
 
     def search_diseases(self, patient_text: str) -> list:
         """

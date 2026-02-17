@@ -551,7 +551,7 @@ with gr.Blocks(
 if __name__ == "__main__":
     print("エンジン初期化中...")
     init_engine()
-    print(f"疾患DB: {len(engine.disease_db)}件 / ベクトルDB: {engine.collection.count()}件")
+    print(f"疾患DB: {len(engine.disease_db)}件 / 疾患Emb: {engine.disease_embs_normed.shape[0]}件")
     print(f"名寄せマップ: {len(engine.test_name_map)}件")
     if engine.hpe_items:
         n_hx = sum(1 for it in engine.hpe_items if it['category'] == 'Hx')

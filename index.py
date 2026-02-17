@@ -17,12 +17,14 @@ fd_*がない場合はfindings_descriptionからチャンク分割にフォー�
 
 import json
 import os
+import numpy as np
 import chromadb
 from openai import OpenAI
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import (
     EMBEDDING_API_KEY, EMBEDDING_BASE_URL, EMBEDDING_MODEL,
-    DISEASES_JSONL, CHROMA_DIR,
+    DISEASES_JSONL, CHROMA_DIR, DATA_DIR,
 )
 
 # ─── ドメイン定義 ───
@@ -301,6 +303,34 @@ def build_index():
     print(f"\nベクトルDB構築完了: {collection.count()}チャンク ({disease_count}疾患) をChromaDBに格納")
     print(f"  = {disease_count}疾患 × 最大6ドメイン（鑑別キー排除済み）")
     print(f"保存先: {CHROMA_DIR}")
+
+    # ─── MEAN集約NPZエクスポート ───
+    print("\nMEAN集約embeddingをNPZに保存...")
+    disease_chunk_embs = defaultdict(list)
+    for j in range(len(ids)):
+        dname = metadatas[j].get("disease_name", "")
+        if dname:
+            disease_chunk_embs[dname].append(all_embeddings[j])
+
+    export_names = sorted(disease_chunk_embs.keys())
+    export_embs_list = []
+    for name in export_names:
+        chunks = np.array(disease_chunk_embs[name], dtype=np.float32)
+        export_embs_list.append(chunks.mean(axis=0))
+    export_embs = np.array(export_embs_list, dtype=np.float32)
+
+    e_norms = np.linalg.norm(export_embs, axis=1, keepdims=True)
+    e_norms[e_norms == 0] = 1.0
+    export_embs_normed = export_embs / e_norms
+
+    npz_file = os.path.join(DATA_DIR, "disease_embs.npz")
+    np.savez_compressed(
+        npz_file,
+        disease_embs_normed=export_embs_normed,
+        disease_names=np.array(export_names, dtype=object),
+    )
+    size_mb = os.path.getsize(npz_file) / 1024 / 1024
+    print(f"MEAN集約NPZ保存: {npz_file} ({len(export_names)}疾患, {size_mb:.1f}MB)")
 
 
 if __name__ == "__main__":

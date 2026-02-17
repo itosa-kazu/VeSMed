@@ -88,7 +88,7 @@ def main():
         return
 
     print(f"疾患データベース: {len(engine.disease_db)}件")
-    print(f"ベクトルDB: {engine.collection.count()}件")
+    print(f"疾患Emb: {engine.disease_embs_normed.shape[0]}件")
     print()
     print("使い方:")
     print("  症状を入力 → 候補疾患と推薦検査を表示")
