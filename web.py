@@ -9,9 +9,15 @@ v2アーキテクチャ: embedding知覚 + LLM判断
   4. 検査結果 → 極性判定 × 反実仮想で疾患重み更新
   5. Novelty → LLM二値判定
   6. 分散/命中/特異度 → 検査・問診ランキング
+  7. HPE所見フィードバック → 行列演算のみで即時更新（LLM不要）
 """
 
+import copy
+import json as _json
+import os
+
 import gradio as gr
+import numpy as np
 import pandas as pd
 from engine import VeSMedEngine
 from config import TOP_K_TESTS
@@ -26,28 +32,69 @@ def init_engine():
     return engine
 
 
+# HPE項目名リスト（Dropdown用、エンジン不要で読み込み）
+def _load_hpe_choices():
+    hx, pe = [], []
+    path = os.path.join(os.path.dirname(__file__), "data", "hpe_items.jsonl")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    item = _json.loads(line)
+                    if item["category"] == "Hx":
+                        hx.append(item["item_name"])
+                    else:
+                        pe.append(item["item_name"])
+    except Exception:
+        pass
+    return hx, pe
+
+HPE_HX_CHOICES, HPE_PE_CHOICES = _load_hpe_choices()
+HPE_ALL_CHOICES = HPE_HX_CHOICES + HPE_PE_CHOICES
+
+
 # ----------------------------------------------------------------
-# コールバック
+# ランキング再計算（共通ロジック）
 # ----------------------------------------------------------------
 
-def analyze_patient(input_text):
+def _rerank(eng, candidates, novelty_tests, novelty_hpe, exclusion_reasons):
+    """全Partの再ランキング。LLM不要、純粋な行列演算。"""
+    cluster_mu = eng.rank_tests_cluster_mu(candidates, novelty=novelty_tests)
+    ranked = eng.rank_tests(candidates, novelty=novelty_tests)
+    critical = eng.rank_tests_critical(candidates, novelty=novelty_tests)
+    confirm = eng.rank_tests_confirm(candidates, novelty=novelty_tests)
+    hpe = eng.rank_hpe(candidates, novelty_hpe=novelty_hpe)
+
+    return (
+        format_diseases_df(candidates),
+        format_hpe_df(hpe, "Hx"),
+        format_hpe_df(hpe, "PE"),
+        format_cluster_mu_df(cluster_mu),
+        format_tests_df(ranked),
+        format_critical_df(critical),
+        format_confirm_df(confirm),
+        format_exclusion_df(exclusion_reasons),
+        format_suppressed_df(eng.test_names, novelty_tests),
+    )
+
+
+# ----------------------------------------------------------------
+# コールバック: 初回分析（LLM使用）
+# ----------------------------------------------------------------
+
+def analyze_patient(input_text, state):
     """
     v2パイプライン: embedding知覚 + LLM判断
-
-    1. テキスト分離（LLM）
-    2. 疾患検索（embedding — 知覚）
-    3. 論理フィルタ（LLM — 判断: 矛盾疾患を除外）
-    4. 検査結果更新（polarity + 反実仮想）
-    5. Novelty（LLM二値判定）
-    6. ランキング（数学 — 分散/命中/特異度）
     """
     import time as _time
     from concurrent.futures import ThreadPoolExecutor
     if not input_text.strip():
-        return (
+        empty = (
             "テキストを入力してください。",
             None, None, None, None, None, None, None, None, None,
+            state, [], [],
         )
+        return empty
 
     eng = init_engine()
 
@@ -71,32 +118,20 @@ def analyze_patient(input_text):
     # Step 2: 並行処理（LLMフィルタ, 検査結果更新, 統合novelty）
     full_text = input_text
 
-    import copy
     cands_copy = copy.deepcopy(candidates)
 
     with ThreadPoolExecutor(max_workers=3) as executor:
-        # LLM論理フィルタ: 矛盾疾患を除外（陰性所見も渡す）
         fut_filter = executor.submit(
             eng.filter_contradictions, candidates, full_text, negative_findings,
         )
-
-        # 検査結果更新
         fut_update = executor.submit(
-            eng.update_from_results, cands_copy, result_lines,
-            positive_text,
+            eng.update_from_results, cands_copy, result_lines, positive_text,
         ) if result_lines else None
+        fut_all_novelty = executor.submit(eng.compute_all_novelty, full_text)
 
-        # 統合Novelty: 検査novelty + HPE novelty + HPE所見抽出を1 LLMコールで
-        fut_all_novelty = executor.submit(
-            eng.compute_all_novelty, full_text,
-        )
-
-        # 結果回収
         novelty, novelty_hpe, hpe_findings = fut_all_novelty.result()
-
         filtered_candidates, exclusion_reasons = fut_filter.result()
 
-        # 検査結果更新（フィルタ前のcopyで更新し、フィルタ後に反映）
         if fut_update:
             updated_cands = fut_update.result()
             updated_map = {c["disease_name"]: c for c in updated_cands}
@@ -106,23 +141,28 @@ def analyze_patient(input_text):
 
     candidates = filtered_candidates
 
-    # HPE所見で疾患重み更新
+    # 陰性所見 → HPE novelty橋渡し（compute_all_noveltyの見逃し補完）
+    if negative_findings:
+        novelty_hpe, hpe_findings = eng.patch_hpe_from_negatives(
+            negative_findings, novelty_hpe, hpe_findings,
+        )
+
+    # HPE所見で疾患重み更新の前にベースを保存
+    candidates_base = copy.deepcopy(candidates)
+
     if hpe_findings:
         candidates = eng.update_from_hpe(candidates, hpe_findings)
 
     t2 = _time.time()
     print(f"[TIMING] parallel: {t2-t1:.1f}s")
 
-    # Step 3: ランキング（数学 — 分散/命中/特異度/共通度）
-    cluster_mu_tests = eng.rank_tests_cluster_mu(candidates, novelty=novelty)
-    ranked_tests = eng.rank_tests(candidates, novelty=novelty)
-    critical_tests = eng.rank_tests_critical(candidates, novelty=novelty)
-    confirm_tests = eng.rank_tests_confirm(candidates, novelty=novelty)
-    ranked_hpe = eng.rank_hpe(candidates, novelty_hpe=novelty_hpe)
+    # Step 3: ランキング
+    tables = _rerank(eng, candidates, novelty, novelty_hpe, exclusion_reasons)
     t3 = _time.time()
     print(f"[TIMING] rank: {t3-t2:.1f}s")
     print(f"[TIMING] === TOTAL: {t3-t0:.1f}s ===")
 
+    # ステータス
     n_results = len(result_lines)
     n_excluded = len(exclusion_reasons)
     filter_info = f" / {n_excluded}疾患除外" if n_excluded > 0 else ""
@@ -133,31 +173,98 @@ def analyze_patient(input_text):
         neg_info = ""
     status = f"分析完了 / {len(candidates)}疾患{filter_info}{neg_info} / 検査結果{n_results}件"
 
-    # 除外疾患テーブル
-    excluded_df = format_exclusion_df(exclusion_reasons)
+    # セッション状態保存
+    auto_pos = [f["item"] for f in hpe_findings if f["polarity"] > 0]
+    auto_neg = [f["item"] for f in hpe_findings if f["polarity"] < 0]
 
-    # 抑制検査テーブル（novelty=0の検査）
-    suppressed_df = format_suppressed_df(eng.test_names, novelty)
+    state = {
+        "candidates_base": candidates_base,
+        "novelty_tests": novelty.tolist(),
+        "exclusion_reasons": exclusion_reasons,
+    }
+
+    # tables = (disease, hx, pe, cluster_mu, tests, critical, confirm, excluded, suppressed)
+    return (
+        status,
+        tables[0],  # disease
+        tables[1],  # hx
+        tables[2],  # pe
+        tables[3],  # cluster_mu
+        tables[4],  # tests
+        tables[5],  # critical
+        tables[6],  # confirm
+        tables[7],  # excluded
+        tables[8],  # suppressed
+        state,
+        auto_pos,
+        auto_neg,
+    )
+
+
+# ----------------------------------------------------------------
+# コールバック: HPE所見フィードバック（LLM不要）
+# ----------------------------------------------------------------
+
+def update_hpe_feedback(pos_items, neg_items, state):
+    """
+    ユーザーが直接選択したHPE所見を反映。
+    LLM不要 — 行列演算のみで疾患重み更新 + 全Part再ランキング。
+    """
+    eng = init_engine()
+
+    if not state or "candidates_base" not in state:
+        return [gr.update()] * 10 + [state, pos_items, neg_items]
+
+    candidates = copy.deepcopy(state["candidates_base"])
+    novelty_tests = np.array(state["novelty_tests"])
+    exclusion_reasons = state["exclusion_reasons"]
+
+    # HPE findings構築
+    hpe_findings = []
+    novelty_hpe = np.ones(len(eng.hpe_names))
+
+    for name in (pos_items or []):
+        idx = eng.hpe_idx.get(name)
+        if idx is not None:
+            hpe_findings.append({"item": name, "index": idx, "polarity": 1})
+            novelty_hpe[idx] = 0.0
+
+    for name in (neg_items or []):
+        idx = eng.hpe_idx.get(name)
+        if idx is not None:
+            hpe_findings.append({"item": name, "index": idx, "polarity": -1})
+            novelty_hpe[idx] = 0.0
+
+    n_pos = sum(1 for f in hpe_findings if f["polarity"] > 0)
+    n_neg = sum(1 for f in hpe_findings if f["polarity"] < 0)
+    print(f"[HPEフィードバック] 陽性{n_pos}件 + 陰性{n_neg}件")
+
+    if hpe_findings:
+        candidates = eng.update_from_hpe(candidates, hpe_findings)
+
+    tables = _rerank(eng, candidates, novelty_tests, novelty_hpe, exclusion_reasons)
+    status = f"HPE更新完了 / 陽性{n_pos}件 + 陰性{n_neg}件 反映"
 
     return (
         status,
-        format_diseases_df(candidates),
-        format_cluster_mu_df(cluster_mu_tests),
-        format_tests_df(ranked_tests),
-        format_critical_df(critical_tests),
-        format_confirm_df(confirm_tests),
-        format_hpe_df(ranked_hpe, "Hx"),
-        format_hpe_df(ranked_hpe, "PE"),
-        excluded_df,
-        suppressed_df,
+        tables[0], tables[1], tables[2], tables[3],
+        tables[4], tables[5], tables[6], tables[7], tables[8],
+        state,
+        pos_items,
+        neg_items,
     )
 
+
+# ----------------------------------------------------------------
+# コールバック: リセット
+# ----------------------------------------------------------------
 
 def reset_session():
     return (
         "",
         "リセットしました。",
         None, None, None, None, None, None, None, None, None,
+        None, [], [],
     )
 
 
@@ -268,7 +375,6 @@ def format_hpe_df(ranked_hpe, category_filter):
 
 
 def format_exclusion_df(exclusion_reasons):
-    """除外された疾患のDataFrame"""
     if not exclusion_reasons:
         return pd.DataFrame(columns=["疾患名", "除外理由"])
     rows = []
@@ -281,8 +387,6 @@ def format_exclusion_df(exclusion_reasons):
 
 
 def format_suppressed_df(test_names, novelty):
-    """novelty=0で抑制された検査のDataFrame"""
-    import numpy as np
     rows = []
     for j, tname in enumerate(test_names):
         if j < len(novelty) and novelty[j] == 0.0:
@@ -303,12 +407,14 @@ with gr.Blocks(
     title="VeSMed - ベクトル空間医学",
 ) as app:
 
+    session_state = gr.State(value=None)
+
     gr.Markdown("""
 # VeSMed - ベクトル空間医学統一フレームワーク
 臨床情報を自由記述 → 症状と検査結果を自動分離 → ベクトル空間で疾患検索・検査推奨
     """)
 
-    # ===== 上段: 入力 =====
+    # ===== 入力 =====
     with gr.Row():
         with gr.Column(scale=3):
             input_text = gr.Textbox(
@@ -324,57 +430,74 @@ with gr.Blocks(
 
     gr.Markdown("---")
 
-    # ===== 中段: 結果テーブル =====
+    # ===== Part D: 問診・身体診察（最上部） =====
+    gr.Markdown("### 問診・身体診察推奨")
+
+    with gr.Row():
+        with gr.Column(scale=1):
+            hpe_hx_table = gr.Dataframe(
+                label="問診推奨（分散ベース）",
+                headers=["#", "項目", "分類", "効用", "分散", "新規", "手順", "関連疾患"],
+                interactive=False,
+            )
+        with gr.Column(scale=1):
+            hpe_pe_table = gr.Dataframe(
+                label="身体診察推奨（分散ベース）",
+                headers=["#", "項目", "分類", "効用", "分散", "新規", "手順", "関連疾患"],
+                interactive=False,
+            )
+
+    # ===== HPE所見フィードバック =====
+    with gr.Accordion("所見フィードバック（LLM不要 — 行列演算のみで即時更新）", open=True):
+        with gr.Row():
+            hpe_pos_dropdown = gr.Dropdown(
+                choices=HPE_ALL_CHOICES, multiselect=True, label="陽性所見（あり）",
+                info="問診・身体診察で陽性だった項目",
+            )
+            hpe_neg_dropdown = gr.Dropdown(
+                choices=HPE_ALL_CHOICES, multiselect=True, label="陰性所見（なし）",
+                info="問診・身体診察で陰性だった項目",
+            )
+        hpe_update_btn = gr.Button("所見反映", variant="secondary")
+
+    gr.Markdown("---")
+
+    # ===== 候補疾患 =====
     with gr.Row():
         disease_table = gr.Dataframe(
             label="候補疾患（類似度順）",
             headers=["#", "疾患名", "類似度", "重み", "緊急度", "診療科"],
             interactive=False,
         )
+
+    # ===== 検査推奨 =====
     with gr.Row():
         cluster_mu_table = gr.Dataframe(
-            label="Part E: 基本推奨（候補群の共通必要度）",
+            label="基本推奨（候補群の共通必要度）",
             headers=["#", "検査名", "効用", "共通度", "新規", "関連疾患"],
             interactive=False,
         )
     with gr.Row():
         with gr.Column(scale=1):
             test_table = gr.Dataframe(
-                label="Part A: 鑑別推奨（分散ベース）",
+                label="鑑別推奨（分散ベース）",
                 headers=["#", "検査名", "効用", "分散", "新規", "関連疾患"],
                 interactive=False,
             )
         with gr.Column(scale=1):
             critical_table = gr.Dataframe(
-                label="Part B: Critical排除推奨（最大命中）",
+                label="Critical排除推奨（最大命中）",
                 headers=["#", "検査名", "効用", "命中", "新規", "排除対象"],
                 interactive=False,
             )
     with gr.Row():
         confirm_table = gr.Dataframe(
-            label="Part C: 確認・同定推奨（加重平均）",
+            label="確認・同定推奨（加重平均）",
             headers=["#", "検査名", "効用", "特異", "新規", "関連疾患"],
             interactive=False,
         )
 
-    gr.Markdown("---")
-    gr.Markdown("### Part D: 問診・身体診察推奨")
-
-    with gr.Row():
-        with gr.Column(scale=1):
-            hpe_hx_table = gr.Dataframe(
-                label="Part D-1: 問診推奨（分散ベース）",
-                headers=["#", "項目", "分類", "効用", "分散", "新規", "手順", "関連疾患"],
-                interactive=False,
-            )
-        with gr.Column(scale=1):
-            hpe_pe_table = gr.Dataframe(
-                label="Part D-2: 身体診察推奨（分散ベース）",
-                headers=["#", "項目", "分類", "効用", "分散", "新規", "手順", "関連疾患"],
-                interactive=False,
-            )
-
-    # ===== 除外・抑制情報（折りたたみ） =====
+    # ===== 除外・抑制情報 =====
     gr.Markdown("---")
     with gr.Accordion("除外された疾患・抑制された検査", open=False):
         with gr.Row():
@@ -393,30 +516,36 @@ with gr.Blocks(
 
     # ===== イベント =====
 
-    outputs = [status_text, disease_table, cluster_mu_table, test_table, critical_table,
-               confirm_table, hpe_hx_table, hpe_pe_table, excluded_table, suppressed_table]
+    # 全出力 (13個): status + 9テーブル + state + 2ドロップダウン
+    all_outputs = [
+        status_text,
+        disease_table, hpe_hx_table, hpe_pe_table,
+        cluster_mu_table, test_table, critical_table, confirm_table,
+        excluded_table, suppressed_table,
+        session_state, hpe_pos_dropdown, hpe_neg_dropdown,
+    ]
 
     analyze_btn.click(
         fn=analyze_patient,
-        inputs=[input_text],
-        outputs=outputs,
+        inputs=[input_text, session_state],
+        outputs=all_outputs,
     )
     input_text.submit(
         fn=analyze_patient,
-        inputs=[input_text],
-        outputs=outputs,
+        inputs=[input_text, session_state],
+        outputs=all_outputs,
+    )
+
+    hpe_update_btn.click(
+        fn=update_hpe_feedback,
+        inputs=[hpe_pos_dropdown, hpe_neg_dropdown, session_state],
+        outputs=all_outputs,
     )
 
     reset_btn.click(
         fn=reset_session,
-        outputs=[input_text] + outputs,
+        outputs=[input_text] + all_outputs,
     )
-
-    # Part D用: HPEエンジン情報表示
-    if engine and engine.hpe_items:
-        n_hx = sum(1 for it in engine.hpe_items if it['category'] == 'Hx')
-        n_pe = sum(1 for it in engine.hpe_items if it['category'] == 'PE')
-        print(f"[Web] Part D: 問診{n_hx}項目 + 身体診察{n_pe}項目 = {n_hx+n_pe}項目")
 
 
 if __name__ == "__main__":
@@ -424,5 +553,9 @@ if __name__ == "__main__":
     init_engine()
     print(f"疾患DB: {len(engine.disease_db)}件 / ベクトルDB: {engine.collection.count()}件")
     print(f"名寄せマップ: {len(engine.test_name_map)}件")
+    if engine.hpe_items:
+        n_hx = sum(1 for it in engine.hpe_items if it['category'] == 'Hx')
+        n_pe = sum(1 for it in engine.hpe_items if it['category'] == 'PE')
+        print(f"HPE: 問診{n_hx}項目 + 身体診察{n_pe}項目 = {n_hx+n_pe}項目")
     print("Web UI起動中...")
     app.launch(inbrowser=True, share=True)

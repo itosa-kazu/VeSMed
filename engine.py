@@ -2485,6 +2485,43 @@ class VeSMedEngine:
         candidates.sort(key=lambda c: c["similarity"], reverse=True)
         return candidates
 
+    def patch_hpe_from_negatives(self, negative_findings: list,
+                                novelty_hpe: np.ndarray,
+                                hpe_findings: list) -> tuple:
+        """
+        split_symptoms_resultsの陰性所見 → HPE novelty橋渡し。
+        compute_all_noveltyが見逃した陰性所見をセーフティネットで補完。
+        """
+        import re
+        if not negative_findings or not self.hpe_names:
+            return novelty_hpe, hpe_findings
+
+        already = {f["item"] for f in hpe_findings}
+        patched = 0
+
+        for neg in negative_findings:
+            for idx, item in enumerate(self.hpe_items):
+                name = item["item_name"]
+                if name in already:
+                    continue
+                # "疝痛・間欠的激痛" → ["疝痛", "間欠的激痛"]
+                # "発熱（急性：1週未満）" → ["発熱"]
+                base = re.sub(r'[（(].+?[）)]', '', name)
+                keywords = [k.strip() for k in base.split('・') if len(k.strip()) >= 2]
+                for kw in keywords:
+                    if kw in neg:
+                        novelty_hpe[idx] = 0.0
+                        hpe_findings.append({
+                            "item": name, "index": idx, "polarity": -1,
+                        })
+                        already.add(name)
+                        patched += 1
+                        break
+
+        if patched > 0:
+            print(f"  [陰性→HPE橋渡し] {patched}件パッチ")
+        return novelty_hpe, hpe_findings
+
     def compute_novelty_hpe(self, patient_text: str,
                             hpe_findings: list = None) -> np.ndarray:
         """
