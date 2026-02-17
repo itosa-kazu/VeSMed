@@ -1,6 +1,6 @@
 {"item_name": "突然発症（数秒）", "category": "Hx", "subcategory": "OPQRST:Onset", "hypothesis": "突然発症 数秒で最大に達する 雷鳴様", "instruction": "発症の瞬間を特定できるか？秒単位で最大か？"}
-{"item_name": "急性発症（分〜時間）", "category": "Hx", "subcategory": "OPQRST:Onset", "hypothesis": "急性発症 分から時間単位で進行 増悪", "instruction": "何分〜何時間で症状が完成したか？"}
-{"item_name": "亜急性発症（日〜週）", "category": "Hx", "subcategory": "OPQRST:Onset", "hypothesis": "亜急性発症 日から週単位で徐々に進行", "instruction": "日〜週単位で徐々に悪化？"}
+{"item_name": "急性発症（分〜時間）", "category": "Hx", "subcategory": "OPQRST:Onset", "hypothesis": "急性発症 数分から数時間で症状がピークに達する 急激に完成", "instruction": "何分〜何時間で症状が最も強くなったか？"}
+{"item_name": "亜急性発症（日〜週）", "category": "Hx", "subcategory": "OPQRST:Onset", "hypothesis": "亜急性発症 数日から数週間かけて徐々に悪化 日ごとに進行", "instruction": "何日〜何週間かけて徐々に悪化した？"}
 {"item_name": "緩徐発症（週〜月）", "category": "Hx", "subcategory": "OPQRST:Onset", "hypothesis": "緩徐発症 週から月単位で緩やかに進行", "instruction": "いつ頃から気になり始めた？"}
 {"item_name": "間欠的再発", "category": "Hx", "subcategory": "OPQRST:Onset", "hypothesis": "間欠的 再発 寛解と増悪を繰り返す 反復性", "instruction": "同様のエピソードが以前にもあったか？"}
 {"item_name": "労作時増悪", "category": "Hx", "subcategory": "OPQRST:Provocation", "hypothesis": "労作時増悪 運動 歩行 階段昇降で悪化 安静で改善", "instruction": "動いた時に悪くなるか？階段や歩行で？"}
@@ -8,7 +8,7 @@
 {"item_name": "食後増悪", "category": "Hx", "subcategory": "OPQRST:Provocation", "hypothesis": "食後増悪 食事摂取後に症状出現 脂肪食 アルコール", "instruction": "食事との関連は？特に脂っこい食事の後は？"}
 {"item_name": "前屈位で軽快", "category": "Hx", "subcategory": "OPQRST:Provocation", "hypothesis": "前屈位で軽快 座位前傾姿勢で改善 後腹膜臓器圧迫緩和 心嚢摩擦軽減", "instruction": "前かがみの姿勢で楽になるか？"}
 {"item_name": "深呼吸時増悪", "category": "Hx", "subcategory": "OPQRST:Provocation", "hypothesis": "深呼吸時増悪 吸気時に疼痛増強 胸膜痛 pleuritic", "instruction": "深く息を吸うと痛みが強くなるか？"}
-{"item_name": "体位変換で増悪", "category": "Hx", "subcategory": "OPQRST:Provocation", "hypothesis": "体位変換で増悪 頭位変換で誘発 回転性めまい", "instruction": "寝返りや頭を動かすと悪化するか？"}
+{"item_name": "体位変換性めまい", "category": "Hx", "subcategory": "OPQRST:Provocation", "hypothesis": "体位変換で回転性めまい誘発 頭位変換 寝返り時のめまい 良性発作性頭位めまい", "instruction": "頭の向きを変えるとめまいが起きるか？寝返り時にぐるぐる回るか？"}
 {"item_name": "Valsalva手技で増悪", "category": "Hx", "subcategory": "OPQRST:Provocation", "hypothesis": "Valsalva手技 いきみ 咳嗽 排便時に増悪 頭蓋内圧", "instruction": "いきんだり咳をすると悪化するか？"}
 {"item_name": "寒冷曝露で誘発", "category": "Hx", "subcategory": "OPQRST:Provocation", "hypothesis": "寒冷曝露 冷気 冷水で症状誘発 冠血管攣縮 末梢血管攣縮 蒼白→紫→紅潮", "instruction": "寒さにさらされた時に症状が出るか？"}
 {"item_name": "ストレス・情動で誘発", "category": "Hx", "subcategory": "OPQRST:Provocation", "hypothesis": "ストレス 情動 精神的緊張 興奮で症状誘発", "instruction": "精神的なストレスや興奮と関連するか？"}
@@ -160,9 +160,10 @@
 {"item_name": "尿量変化", "category": "Hx", "subcategory": "ROS:泌尿器", "hypothesis": "尿量減少 乏尿 無尿 多尿 糸球体濾過率変化 浸透圧利尿", "instruction": "尿の量は変わったか？減った？増えた？"}
 {"item_name": "月経異常", "category": "Hx", "subcategory": "ROS:生殖器", "hypothesis": "月経異常 不正出血 過多月経 無月経 月経困難", "instruction": "月経は順調か？不正出血は？量の変化は？"}
 {"item_name": "関節痛（急性）", "category": "Hx", "subcategory": "ROS:筋骨格", "hypothesis": "急性関節痛 急に腫れた関節 発赤 熱感 単関節 数日以内", "instruction": "急に関節が腫れたか？いつから？赤くなっているか？"}
-{"item_name": "関節痛（慢性）", "category": "Hx", "subcategory": "ROS:筋骨格", "hypothesis": "慢性関節痛 数ヶ月以上の関節痛 朝のこわばり 多関節 左右対称", "instruction": "数ヶ月以上続く関節痛か？朝のこわばりは？左右対称か？"}
+{"item_name": "関節痛（慢性）", "category": "Hx", "subcategory": "ROS:筋骨格", "hypothesis": "慢性関節痛 数ヶ月以上の関節痛 多関節 左右対称 持続的な関節腫脹", "instruction": "数ヶ月以上続く関節痛か？左右対称か？腫れているか？"}
 {"item_name": "筋力低下", "category": "Hx", "subcategory": "ROS:筋骨格", "hypothesis": "筋力低下 力が入らない 近位筋 遠位筋 階段昇降困難", "instruction": "力が入りにくいか？階段は？物を持ち上げられるか？"}
 {"item_name": "朝のこわばり", "category": "Hx", "subcategory": "ROS:筋骨格", "hypothesis": "朝のこわばり 関節のこわばり 30分以上 1時間以上 自己免疫性滑膜炎", "instruction": "朝起きた時に関節がこわばるか？何分続く？"}
+{"item_name": "全身筋痛・筋肉痛", "category": "Hx", "subcategory": "ROS:筋骨格", "hypothesis": "筋肉痛 筋痛 びまん性筋骨格痛 四肢・体幹の筋圧痛", "instruction": "痛いのは関節か筋肉か？どの部位？押すと痛いか？"}
 {"item_name": "発疹", "category": "Hx", "subcategory": "ROS:皮膚", "hypothesis": "発疹 皮疹 湿疹 蕁麻疹 紅斑 水疱 膿疱", "instruction": "皮膚に何か出ているか？いつから？かゆみは？"}
 {"item_name": "掻痒", "category": "Hx", "subcategory": "ROS:皮膚", "hypothesis": "掻痒 かゆみ 全身性 局所性 胆汁うっ滞 尿毒素蓄積 リンパ増殖", "instruction": "かゆみはあるか？全身？局所？夜間悪化？"}
 {"item_name": "紫斑", "category": "Hx", "subcategory": "ROS:皮膚", "hypothesis": "紫斑 あざ 皮下出血 点状出血 血小板減少 凝固障害", "instruction": "あざができやすいか？ぶつけていないのにあざは？"}
