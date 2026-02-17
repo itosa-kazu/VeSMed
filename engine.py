@@ -2426,23 +2426,25 @@ class VeSMedEngine:
 
     def update_from_hpe(self, candidates: list, hpe_findings: list) -> list:
         """
-        問診/身体診察所見から疾患重みを更新（√N正規化方式）。
+        問診/身体診察所見から疾患重みを更新。
 
-        全所見のdeltaを疾患ごとに合算し、√Nで正規化して1回だけ乗算。
-        N回の指数乗算による発散を防止する。
+        陽性と陰性を分離し、それぞれ独立に√N正規化して適用。
+        陽性/陰性を混合するとdelta打消しで効果が消えるため。
 
         Type F（所見）: sim_matrix_hpe（screen行列）を使用
         Type R（リスク因子）: sim_matrix_hpe_confirm（confirm行列）を使用
 
-        delta = Σ polarity_k × excess_k
-        similarity *= exp(delta / √N)
+        similarity *= exp(+boost / √N_pos) × exp(-penalty / √N_neg)
         """
         if not hpe_findings or self.sim_matrix_hpe is None:
             return candidates
 
-        # 1. 全所見のdeltaを疾患ごとに合算
-        deltas = {}  # disease_name → float
-        active_count = 0
+        # 陽性/陰性を分離して集計
+        boost = {}    # disease_name → float (陽性合算)
+        penalty = {}  # disease_name → float (陰性合算)
+        n_pos = 0
+        n_neg = 0
+
         for f in hpe_findings:
             idx = f["index"]
             polarity = f["polarity"]
@@ -2461,7 +2463,6 @@ class VeSMedEngine:
                 sims = self.sim_matrix_hpe[:, idx]
                 matrix_label = "screen"
 
-            active_count += 1
             bg = float(sims.mean())
 
             for c in candidates:
@@ -2469,20 +2470,36 @@ class VeSMedEngine:
                 if d_idx is not None:
                     excess = max(0.0, float(sims[d_idx]) - bg)
                     if excess > 0:
-                        deltas[c["disease_name"]] = deltas.get(c["disease_name"], 0.0) + polarity * excess
+                        dname = c["disease_name"]
+                        if polarity > 0:
+                            boost[dname] = boost.get(dname, 0.0) + excess
+                        else:
+                            penalty[dname] = penalty.get(dname, 0.0) + excess
 
+            if polarity > 0:
+                n_pos += 1
+            else:
+                n_neg += 1
             print(f"  [HPE更新] {f['item']} (pol={polarity:+d}) bg={bg:.4f} [{matrix_label}]")
 
-        # 2. √Nで正規化して1回だけ乗算
-        if active_count == 0:
-            return candidates
-        sqrt_n = math.sqrt(active_count)
-        for c in candidates:
-            delta = deltas.get(c["disease_name"], 0.0)
-            if delta != 0:
-                c["similarity"] *= float(np.exp(delta / sqrt_n))
+        # 陽性ブースト適用（独立√N_pos正規化）
+        if n_pos > 0:
+            sqrt_pos = math.sqrt(n_pos)
+            for c in candidates:
+                b = boost.get(c["disease_name"], 0.0)
+                if b > 0:
+                    c["similarity"] *= float(np.exp(b / sqrt_pos))
 
-        print(f"  [HPE更新] √N正規化: active={active_count}, √N={sqrt_n:.2f}")
+        # 陰性ペナルティ適用（独立√N_neg正規化）
+        if n_neg > 0:
+            sqrt_neg = math.sqrt(n_neg)
+            for c in candidates:
+                p = penalty.get(c["disease_name"], 0.0)
+                if p > 0:
+                    c["similarity"] *= float(np.exp(-p / sqrt_neg))
+
+        print(f"  [HPE更新] 陽性{n_pos}件(√{n_pos}={math.sqrt(max(n_pos,1)):.2f}) "
+              f"/ 陰性{n_neg}件(√{n_neg}={math.sqrt(max(n_neg,1)):.2f})")
 
         # 重み順にソート
         candidates.sort(key=lambda c: c["similarity"], reverse=True)
