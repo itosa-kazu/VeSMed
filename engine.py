@@ -137,12 +137,14 @@ class VeSMedEngine:
         self.hpe_items = []          # [{"item_name", "category", "subcategory", "hypothesis", "instruction"}, ...]
         self.hpe_names = []          # 項目名リスト（表示用）
         self.hpe_idx = {}            # item_name → index
-        self.sim_matrix_hpe = None   # (N_diseases, N_hpe_items) ndarray
+        self.sim_matrix_hpe = None   # (N_diseases, N_hpe_items) ndarray (screen用)
+        self.sim_matrix_hpe_confirm = None  # (N_diseases, N_hpe_items) confirm行列
         self.hpe_name_embs = None    # (N_hpe_items, dim) 正規化済み
         self.hpe_hyp_embs = None     # (N_hpe_items, dim) 仮説embedding（novelty二重マッチ用）
         self._load_hpe_items()
         if self.hpe_items:
             self._compute_hpe_similarity_matrix()
+            self._load_hpe_confirm_matrix()
             self._compute_hpe_name_embs()
 
         # 最後のクエリembedding（rank_testsでrisk_relevance計算に使用）
@@ -337,6 +339,30 @@ class VeSMedEngine:
             print(f"  confirm: {len(cached_diseases)}疾患×{len(cached_tests)}検査")
             print(f"  screen:  {len(disease_names)}疾患×{len(self.test_names)}検査")
             self.sim_matrix_confirm = self.sim_matrix
+
+    def _load_hpe_confirm_matrix(self):
+        """
+        HPE confirm行列の読み込み（build_hpe_matrix.pyで事前生成）。
+        update_from_hpe()でType R項目の疾患重み更新に使用。
+        未生成の場合はsim_matrix_hpe（screen用）にフォールバック。
+        """
+        confirm_file = os.path.join(DATA_DIR, "sim_matrix_hpe_confirm.npz")
+        if not os.path.exists(confirm_file):
+            print("[sim_matrix_hpe_confirm] ファイル未生成 → sim_matrix_hpeにフォールバック")
+            self.sim_matrix_hpe_confirm = self.sim_matrix_hpe
+            return
+
+        data = np.load(confirm_file, allow_pickle=True)
+        cached_diseases = list(data.get("disease_names", []))
+        cached_hpe = list(data.get("hpe_names", []))
+
+        disease_names = sorted(self.disease_idx.keys())
+        if cached_diseases == disease_names and cached_hpe == self.hpe_names:
+            self.sim_matrix_hpe_confirm = data["sim_matrix"]
+            print(f"[sim_matrix_hpe_confirm] confirm行列読込 {self.sim_matrix_hpe_confirm.shape}")
+        else:
+            print(f"[sim_matrix_hpe_confirm] リスト不一致 → sim_matrix_hpeにフォールバック")
+            self.sim_matrix_hpe_confirm = self.sim_matrix_hpe
 
     def _batch_embed(self, texts, batch_size=50, max_workers=40):
         """テキストリストをバッチ並行でembedding。ndarray (N, dim) を返す。"""
@@ -2392,8 +2418,8 @@ class VeSMedEngine:
 
         return []
 
-    # 背景情報カテゴリ: sim_matrix_hpe更新からスキップし、LLMフィルタのコンテキストのみ
-    _HPE_BACKGROUND_SUBCATS = {"既往歴", "薬剤歴", "嗜好/社会歴", "家族歴"}
+    # Type R (リスク因子) サブカテゴリ: confirm行列を使用
+    _HPE_TYPE_R_SUBCATS = {"既往歴", "薬剤歴", "嗜好/社会歴", "家族歴"}
 
     def update_from_hpe(self, candidates: list, hpe_findings: list) -> list:
         """
@@ -2402,8 +2428,8 @@ class VeSMedEngine:
         全所見のdeltaを疾患ごとに合算し、√Nで正規化して1回だけ乗算。
         N回の指数乗算による発散を防止する。
 
-        既往歴・薬剤歴・社会歴・家族歴は「背景情報」のため、
-        sim_matrix_hpe更新からスキップ（LLMフィルタのコンテキストとしてのみ使用）。
+        Type F（所見）: sim_matrix_hpe（screen行列）を使用
+        Type R（リスク因子）: sim_matrix_hpe_confirm（confirm行列）を使用
 
         delta = Σ polarity_k × excess_k
         similarity *= exp(delta / √N)
@@ -2411,24 +2437,28 @@ class VeSMedEngine:
         if not hpe_findings or self.sim_matrix_hpe is None:
             return candidates
 
-        # 1. 全所見のdeltaを疾患ごとに合算（背景情報はスキップ）
+        # 1. 全所見のdeltaを疾患ごとに合算
         deltas = {}  # disease_name → float
         active_count = 0
-        skipped_count = 0
         for f in hpe_findings:
             idx = f["index"]
             polarity = f["polarity"]
 
-            # 背景情報カテゴリはスキップ
+            # Type R → confirm行列, Type F → screen行列
+            use_confirm = False
             if idx < len(self.hpe_items):
                 subcat = self.hpe_items[idx].get("subcategory", "")
-                if subcat in self._HPE_BACKGROUND_SUBCATS:
-                    skipped_count += 1
-                    print(f"  [HPE更新] {f['item']} (pol={polarity:+d}) SKIP (背景: {subcat})")
-                    continue
+                if subcat in self._HPE_TYPE_R_SUBCATS:
+                    use_confirm = True
+
+            if use_confirm and self.sim_matrix_hpe_confirm is not None:
+                sims = self.sim_matrix_hpe_confirm[:, idx]
+                matrix_label = "confirm"
+            else:
+                sims = self.sim_matrix_hpe[:, idx]
+                matrix_label = "screen"
 
             active_count += 1
-            sims = self.sim_matrix_hpe[:, idx]  # (N_diseases,)
             bg = float(sims.mean())
 
             for c in candidates:
@@ -2438,11 +2468,10 @@ class VeSMedEngine:
                     if excess > 0:
                         deltas[c["disease_name"]] = deltas.get(c["disease_name"], 0.0) + polarity * excess
 
-            print(f"  [HPE更新] {f['item']} (pol={polarity:+d}) bg={bg:.4f}")
+            print(f"  [HPE更新] {f['item']} (pol={polarity:+d}) bg={bg:.4f} [{matrix_label}]")
 
-        # 2. √Nで正規化して1回だけ乗算（Nは背景スキップ後のアクティブ所見数）
+        # 2. √Nで正規化して1回だけ乗算
         if active_count == 0:
-            print(f"  [HPE更新] アクティブ所見なし（全{skipped_count}件が背景情報）")
             return candidates
         sqrt_n = math.sqrt(active_count)
         for c in candidates:
@@ -2450,7 +2479,7 @@ class VeSMedEngine:
             if delta != 0:
                 c["similarity"] *= float(np.exp(delta / sqrt_n))
 
-        print(f"  [HPE更新] √N正規化: active={active_count}, skipped={skipped_count}, √N={sqrt_n:.2f}")
+        print(f"  [HPE更新] √N正規化: active={active_count}, √N={sqrt_n:.2f}")
 
         # 重み順にソート
         candidates.sort(key=lambda c: c["similarity"], reverse=True)
