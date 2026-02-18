@@ -982,18 +982,20 @@ class VeSMedEngine:
     def update_from_results(self, candidates: list, result_lines: list,
                             symptoms: str = "") -> list:
         """
-        検査結果から疾患重みを更新（直接法）。
+        波動方式: 検査結果embeddingをクエリベクトルに加減算。
 
-        sim_matrixを使わず、結果テキストのembeddingを疾患embeddingと直接比較。
+        異常結果: result_emb を加算（建設的干渉）
+        正常結果: 反実仮想 "検査名 異常" emb を減算（破壊的干渉）
+        正常結果（定量・双方向）: "異常 上昇" + "異常 低下" 両方を減算
 
-        異常結果: result_emb × disease_embs → excess → exp(+excess) で増幅
-        正常結果（定量）: 双方向反実仮想 "検査名 異常 上昇/低下" →
-                          exp(-(excess_up + excess_down)) で抑制
-        正常結果（定性）: 単方向反実仮想 "検査名 異常" → exp(-excess) で抑制
+        delta = wave_sim - original_sim を既存similarityに加算。
+        ハイパーパラメータなし。
         """
         if not result_lines or self.polarity_axis is None:
             return candidates
         if self.disease_embs_normed is None:
+            return candidates
+        if self._last_query_embedding is None:
             return candidates
 
         # アノテーション（LLM優先、フォールバック: 基準範囲テーブル）
@@ -1009,7 +1011,7 @@ class VeSMedEngine:
                 input=annotated,
             )
         except Exception as e:
-            print(f"[Option3] embedding失敗: {e}")
+            print(f"[結果波動] embedding失敗: {e}")
             return candidates
 
         line_embs = np.array([d.embedding for d in resp.data], dtype=np.float32)
@@ -1021,24 +1023,22 @@ class VeSMedEngine:
         polarities = line_embs @ self.polarity_axis  # (N_lines,)
 
         # --- 正常結果の反実仮想テキストを構築 ---
-        cf_texts = []       # 反実仮想テキスト（一括embed用）
-        cf_meta = {}        # line_idx → (cf_start_offset, is_bidirectional, test_name)
+        cf_texts = []
+        cf_meta = {}
 
         for k in range(len(result_lines)):
             if polarities[k] > 0:
-                continue  # 異常: 反実仮想不要
+                continue
 
             test_name, _ = self._match_test_name(line_embs[k])
             canonical = self._resolve_test_alias(test_name)
 
             cf_start = len(cf_texts)
             if canonical and canonical in self.reference_ranges:
-                # 定量検査 → 双方向
                 cf_texts.append(f"{test_name} 異常 上昇")
                 cf_texts.append(f"{test_name} 異常 低下")
                 cf_meta[k] = (cf_start, True, test_name)
             else:
-                # 定性検査 → 単方向
                 cf_texts.append(f"{test_name} 異常")
                 cf_meta[k] = (cf_start, False, test_name)
 
@@ -1055,10 +1055,19 @@ class VeSMedEngine:
                 cf_norms[cf_norms == 0] = 1.0
                 cf_embs = cf_embs / cf_norms
             except Exception as e:
-                print(f"[Option3] 反実仮想embedding失敗: {e}")
+                print(f"[結果波動] 反実仮想embedding失敗: {e}")
                 cf_embs = None
 
-        # --- 各結果行を処理 ---
+        # --- 波動修正: クエリベクトルに結果embeddingを加減算 ---
+        query_emb = self._last_query_embedding.copy()
+        q_norm = np.linalg.norm(query_emb)
+        if q_norm > 0:
+            query_emb /= q_norm
+
+        wave_query = query_emb.copy()
+        n_abnormal = 0
+        n_normal = 0
+
         for k in range(len(result_lines)):
             orig = result_lines[k]
             ann = annotated[k]
@@ -1066,23 +1075,15 @@ class VeSMedEngine:
             log_ann = f" → [{ann}]" if ann != orig else ""
 
             if pol > 0:
-                # === 異常結果: 直接法 ===
-                # result_emb × disease_embs → 関連疾患を増幅
-                sims_d = line_embs[k] @ self.disease_embs_normed.T
-                bg = float(sims_d.mean())
+                # === 異常結果: 建設的干渉 ===
+                wave_query = wave_query + line_embs[k]
+                n_abnormal += 1
 
                 test_name, match_sim = self._match_test_name(line_embs[k])
-                print(f"  [結果] {orig}{log_ann} → {test_name} (cos={match_sim:.3f}) "
-                      f"pol={pol:+.4f} → 異常（直接法）")
-
-                for c in candidates:
-                    d_idx = self.disease_idx.get(c['disease_name'])
-                    if d_idx is not None:
-                        excess = max(0.0, float(sims_d[d_idx]) - bg)
-                        if excess > 0:
-                            c['similarity'] *= float(np.exp(excess))
+                print(f"  [結果波動] {orig}{log_ann} → {test_name} (cos={match_sim:.3f}) "
+                      f"pol={pol:+.4f} → 異常（加算）")
             else:
-                # === 正常結果: 反実仮想法 ===
+                # === 正常結果: 破壊的干渉（反実仮想を減算） ===
                 if cf_embs is None or k not in cf_meta:
                     continue
 
@@ -1090,40 +1091,33 @@ class VeSMedEngine:
                 _, match_sim = self._match_test_name(line_embs[k])
 
                 if is_bidir:
-                    # 双方向: exp(-(excess_up + excess_down))
-                    cf_up = cf_embs[cf_start]
-                    cf_down = cf_embs[cf_start + 1]
-                    sims_up = cf_up @ self.disease_embs_normed.T
-                    sims_down = cf_down @ self.disease_embs_normed.T
-                    bg_up = float(sims_up.mean())
-                    bg_down = float(sims_down.mean())
-
-                    print(f"  [結果] {orig}{log_ann} → {test_name} (cos={match_sim:.3f}) "
-                          f"pol={pol:+.4f} → 正常（双方向反実仮想）")
-
-                    for c in candidates:
-                        d_idx = self.disease_idx.get(c['disease_name'])
-                        if d_idx is not None:
-                            e_up = max(0.0, float(sims_up[d_idx]) - bg_up)
-                            e_down = max(0.0, float(sims_down[d_idx]) - bg_down)
-                            total = e_up + e_down
-                            if total > 0:
-                                c['similarity'] *= float(np.exp(-total))
+                    wave_query = wave_query - cf_embs[cf_start]
+                    wave_query = wave_query - cf_embs[cf_start + 1]
+                    n_normal += 1
+                    print(f"  [結果波動] {orig}{log_ann} → {test_name} (cos={match_sim:.3f}) "
+                          f"pol={pol:+.4f} → 正常（双方向減算）")
                 else:
-                    # 単方向: exp(-excess)
-                    cf_emb = cf_embs[cf_start]
-                    sims_d = cf_emb @ self.disease_embs_normed.T
-                    bg = float(sims_d.mean())
+                    wave_query = wave_query - cf_embs[cf_start]
+                    n_normal += 1
+                    print(f"  [結果波動] {orig}{log_ann} → {test_name} (cos={match_sim:.3f}) "
+                          f"pol={pol:+.4f} → 正常（減算）")
 
-                    print(f"  [結果] {orig}{log_ann} → {test_name} (cos={match_sim:.3f}) "
-                          f"pol={pol:+.4f} → 正常（反実仮想）")
+        # 再正規化
+        w_norm = np.linalg.norm(wave_query)
+        if w_norm > 0:
+            wave_query /= w_norm
 
-                    for c in candidates:
-                        d_idx = self.disease_idx.get(c['disease_name'])
-                        if d_idx is not None:
-                            excess = max(0.0, float(sims_d[d_idx]) - bg)
-                            if excess > 0:
-                                c['similarity'] *= float(np.exp(-excess))
+        # delta計算
+        wave_sims = wave_query @ self.disease_embs_normed.T
+        orig_sims = query_emb @ self.disease_embs_normed.T
+
+        for c in candidates:
+            d_idx = self.disease_idx.get(c["disease_name"])
+            if d_idx is not None:
+                delta = float(wave_sims[d_idx] - orig_sims[d_idx])
+                c["similarity"] += delta
+
+        print(f"  [結果波動] 異常{n_abnormal}件（加算） + 正常{n_normal}件（減算） → 干渉delta適用")
 
         # 降順ソート
         candidates.sort(key=lambda x: x['similarity'], reverse=True)
@@ -2426,22 +2420,29 @@ class VeSMedEngine:
 
     def update_from_hpe(self, candidates: list, hpe_findings: list) -> list:
         """
-        問診/身体診察所見から疾患重みを更新。
+        波動方式: クエリベクトルにHPE仮説embeddingを加減算し、
+        干渉パターンで疾患類似度を補正。
 
-        陽性と陰性を分離し、それぞれ独立に√N正規化して適用。
-        陽性/陰性を混合するとdelta打消しで効果が消えるため。
+        陽性所見 → 建設的干渉（ベクトル加算）
+        陰性所見 → 破壊的干渉（ベクトル減算）
 
-        Type F（所見）: sim_matrix_hpe（screen行列）を使用
-        Type R（リスク因子）: sim_matrix_hpe_confirm（confirm行列）を使用
-
-        similarity *= exp(+boost / √N_pos) × exp(-penalty / √N_neg)
+        delta = wave_sim - original_sim を既存similarityに加算。
+        update_from_results等の先行調整を保持しつつHPE効果を重畳。
+        ハイパーパラメータなし。
         """
-        if not hpe_findings or self.sim_matrix_hpe is None:
+        if not hpe_findings or self.hpe_hyp_embs is None:
+            return candidates
+        if self._last_query_embedding is None:
             return candidates
 
-        # 陽性/陰性を分離して集計
-        boost = {}    # disease_name → float (陽性合算)
-        penalty = {}  # disease_name → float (陰性合算)
+        # クエリベクトル正規化
+        query_emb = self._last_query_embedding.copy()
+        q_norm = np.linalg.norm(query_emb)
+        if q_norm > 0:
+            query_emb /= q_norm
+
+        # 波動修正: 陽性→加算、陰性→減算
+        wave_query = query_emb.copy()
         n_pos = 0
         n_neg = 0
 
@@ -2449,59 +2450,38 @@ class VeSMedEngine:
             idx = f["index"]
             polarity = f["polarity"]
 
-            # Type R → confirm行列, Type F → screen行列
-            use_confirm = False
-            if idx < len(self.hpe_items):
-                subcat = self.hpe_items[idx].get("subcategory", "")
-                if subcat in self._HPE_TYPE_R_SUBCATS:
-                    use_confirm = True
+            if idx >= len(self.hpe_hyp_embs):
+                continue
 
-            if use_confirm and self.sim_matrix_hpe_confirm is not None:
-                sims = self.sim_matrix_hpe_confirm[:, idx]
-                matrix_label = "confirm"
-            else:
-                sims = self.sim_matrix_hpe[:, idx]
-                matrix_label = "screen"
-
-            bg = float(sims.mean())
-
-            for c in candidates:
-                d_idx = self.disease_idx.get(c["disease_name"])
-                if d_idx is not None:
-                    excess = max(0.0, float(sims[d_idx]) - bg)
-                    if excess > 0:
-                        dname = c["disease_name"]
-                        if polarity > 0:
-                            boost[dname] = boost.get(dname, 0.0) + excess
-                        else:
-                            penalty[dname] = penalty.get(dname, 0.0) + excess
+            hpe_emb = self.hpe_hyp_embs[idx]  # 正規化済み仮説embedding
 
             if polarity > 0:
+                wave_query = wave_query + hpe_emb
                 n_pos += 1
             else:
+                wave_query = wave_query - hpe_emb
                 n_neg += 1
-            print(f"  [HPE更新] {f['item']} (pol={polarity:+d}) bg={bg:.4f} [{matrix_label}]")
 
-        # 陽性ブースト適用（独立√N_pos正規化）
-        if n_pos > 0:
-            sqrt_pos = math.sqrt(n_pos)
-            for c in candidates:
-                b = boost.get(c["disease_name"], 0.0)
-                if b > 0:
-                    c["similarity"] *= float(np.exp(b / sqrt_pos))
+            print(f"  [HPE波動] {f['item']} (pol={polarity:+d})")
 
-        # 陰性ペナルティ適用（独立√N_neg正規化）
-        if n_neg > 0:
-            sqrt_neg = math.sqrt(n_neg)
-            for c in candidates:
-                p = penalty.get(c["disease_name"], 0.0)
-                if p > 0:
-                    c["similarity"] *= float(np.exp(-p / sqrt_neg))
+        # 再正規化
+        w_norm = np.linalg.norm(wave_query)
+        if w_norm > 0:
+            wave_query /= w_norm
 
-        print(f"  [HPE更新] 陽性{n_pos}件(√{n_pos}={math.sqrt(max(n_pos,1)):.2f}) "
-              f"/ 陰性{n_neg}件(√{n_neg}={math.sqrt(max(n_neg,1)):.2f})")
+        # delta計算: wave_sim - original_sim
+        wave_sims = wave_query @ self.disease_embs_normed.T
+        orig_sims = query_emb @ self.disease_embs_normed.T
 
-        # 重み順にソート
+        for c in candidates:
+            d_idx = self.disease_idx.get(c["disease_name"])
+            if d_idx is not None:
+                delta = float(wave_sims[d_idx] - orig_sims[d_idx])
+                c["similarity"] += delta
+
+        print(f"  [HPE波動] 陽性{n_pos}件 + 陰性{n_neg}件 → 干渉delta適用")
+
+        # 類似度順にソート（負の値もそのまま）
         candidates.sort(key=lambda c: c["similarity"], reverse=True)
         return candidates
 
