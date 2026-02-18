@@ -1,416 +1,260 @@
-# VeSMed v2 完全技術仕様書（外部レビュー用）
+# VeSMed 検査マスタ全体レビュー相談文書
 
-※ 本書はengine.py（2457行）、web.py、index.py、config.pyの全コードを精読した上で記述。
-コードの実際の動作に基づいており、コメントや変数名から推測した情報ではない。
+## 1. VeSMedとは
 
----
+**Vector Space Medicine（ベクトル空間医学）** — 臨床所見のテキスト入力から、鑑別疾患ランキング・推奨検査・推奨問診/身体診察を算出する臨床意思決定支援システム。
 
-## 1. テクノロジースタック
+### v2の理念と哲学
 
-| 役割 | 技術 |
-|------|------|
-| LLM（推論・判断） | Vertex AI `gemini-3-flash-preview`（プライマリ）→ lemonapi → 12ai（3段フォールバック） |
-| Embedding | `Qwen3-Embedding-8B` via OpenRouter, **4096次元** |
-| ベクトルDB | ChromaDB（cosine距離） |
-| Web UI | Gradio |
+- **知覚はembedding、判断はLLM** — embeddingは意味的類似性の天才だが論理の盲目。論理的判断（矛盾検出、因果推論、極性判定）はLLMに任せる。
+- **ハイパーパラメータなし** — 閾値やweight係数を人手で調整しない。全ての判断はデータ駆動またはLLM推論。
+- **自然言語的に統一** — システムの全層が自然言語で通信する。embeddingの入出力も、LLMへのクエリも、全て自然言語。
+- **所見即所得** — 入力した所見がそのまま結果に反映される。ブラックボックスの中間層を排除。
+- **天井 = LLM記述の質 × LLM推論の質** — マスタデータの記述品質がembedding検索の精度を決め、ランタイムLLMの推論品質がフィルタ・novelty・分類の精度を決める。この2つの積がシステムの上限。
 
 ---
 
-## 2. データ資産
+## 2. システムアーキテクチャ概要
 
-### 2.1 diseases.jsonl（519件、うち488件がChromaDB indexed）
+```
+[患者テキスト入力]
+    ↓
+[Step 0] LLM 3分類: 陽性所見 / 陰性所見 / 検査結果
+    ↓                    ↓              ↓
+[Step 1]          [Step 2 並行]     [Step 2 並行]
+embedding検索     LLMフィルタ       統合Novelty
+(陽性所見→         (矛盾除外)        (検査+HPE)
+ ChromaDB)             ↓              ↓
+    ↓            検査結果→update    HPE所見→update
+候補疾患522件     (反実仮想法)       (背景情報)
+    ↓
+[Step 3] 数学ランキング
+    ├─ Part A: 分散ベース検査推奨（鑑別）
+    ├─ Part B: Critical Hit検査推奨（致死的疾患除外）
+    ├─ Part C: 特異度ベース検査推奨（確認）
+    ├─ Part D: 問診推奨（HPE）
+    └─ Part E: 共通必要度検査推奨（基本）
+```
 
-**フィールド一覧（16種）:**
-`disease_name`, `icd10`, `category`, `description_for_embedding`, `findings_description`,
-`findings_description_v2`, `urgency`, `age_peak`, `gender_tendency`, `risk_factors`,
-`core_symptoms`, `common_symptoms`, `rare_but_specific`, `core_signs`, `differential_top5`,
-`relevant_tests`
+### データ資産
 
-**統計:**
-| フィールド | 件数 | 平均文字数 | min | max |
-|---|---|---|---|---|
-| `description_for_embedding` | 519 | 291字 | 205 | 376 |
-| `findings_description` | 488 | **18,512字** | 10,527 | 39,896 |
-| `findings_description_v2` | 110 | ~31,898字 | - | - |
+| コンポーネント | 格納場所 | 件数 | 用途 |
+|---|---|---|---|
+| 疾患マスタ | diseases.jsonl | 527件 (522件ChromaDB収録) | fd_*セクション別記述、embedding検索のソース |
+| **検査マスタ** | **tests.jsonl** | **344件** | **検査メタデータ、findings_description、hypothesis_text** |
+| HPEマスタ | hpe_items.jsonl | 279件 (Hx:178, PE:101) | 問診・身体診察項目 |
+| ChromaDB | chroma_db/ | 2976チャンク (522疾患×6ドメイン) | **疾患のみ**をembedding索引 |
+| sim_matrix | sim_matrix.npz | (522, 335) | 疾患×検査のcos類似度行列 |
+| sim_matrix_hpe | sim_matrix_hpe.npz | (522, 279) | 疾患×HPEのcos類似度行列 |
 
-**urgency分布:** 超緊急79 / 緊急157 / 準緊急141 / 通常141 / その他1
-
-**★重要: ChromaDBに格納されているのは `findings_description`（18K字）である。**
-`description_for_embedding`（291字）はどこにも使われていない死んだフィールドである。
-index.pyのコメントには「description_for_embeddingを格納」と書いてあるが、
-実際のコード（L58）は `d.get("findings_description", "")` で `findings_description` を使用している。
-`findings_description` が存在しない31件がChromaDB未登録（519-488=31）。
-
-### 2.2 tests.jsonl（340件、うち331件がsim_matrixに参加）
-
-**フィールド一覧:**
-`test_name`, `category`, `hypothesis_text`, `findings_description`,
-`quality_description`, `risk_description`, `description_for_embedding`,
-`turnaround_minutes`, `sample_type`, `contraindications`, `notes`
-
-**統計:**
-| フィールド | 件数 | 平均文字数 |
-|---|---|---|
-| `hypothesis_text` | 340 | 49字 |
-| `findings_description` | 331 | 11,457字 |
-| `quality_description` | 331 | 1,239字 |
-| `risk_description` | 40 | - |
-
-検査の`findings_description`はsim_matrix計算には使われない（フィルタ条件としてのみ使用）。
-`hypothesis_text`がsim_matrix計算に使われる。
-`quality_description`は侵襲性スコアと検査の質スコア計算に使われる。
-
-### 2.3 hpe_items.jsonl（274件: Hx 173, PE 101）
-
-**フィールド一覧:** `item_name`, `category`, `subcategory`, `hypothesis`, `instruction`
-
-### 2.4 事前計算行列
-
-| 行列 | サイズ | 計算方法 |
-|---|---|---|
-| `sim_matrix` | (488, 331) | `disease_embs_normed @ hypothesis_embs_normed.T` |
-| `sim_matrix_hpe` | (488, 274) | `disease_embs_normed @ hpe_hypothesis_embs_normed.T` |
+**重要**: ChromaDBには**疾患のみ**がindex。検査はChromaDBに入っていない。検査の推奨は`sim_matrix`（疾患embedding × 検査hypothesis embedding）の数学演算で算出。
 
 ---
 
-## 3. パイプライン（web.py → engine.py）
+## 3. 検査マスタの現状（★今回のレビュー対象★）
 
-ユーザーが自由記述テキストを入力してからランキングが返るまでの全処理。
-コードの実際の呼び出し順に記述。
-
-### Step 0: テキスト3分類（LLM）
-```
-入力: 自由記述テキスト
-出力: (positive_text, negative_findings[], result_lines[])
-方法: LLMが3カテゴリに分離
-  - positive_findings: 陽性症状・所見（→ Step 1へ）
-  - negative_findings: 陰性所見（→ Step 2のLLMフィルタへ）
-  - results: 検査結果の数値（→ Step 3へ）
-フォールバック: embedding類似度ベース分離（陰性分離不可）
-```
-
-### Step 1: 疾患検索（embedding — 知覚）
-```
-入力: positive_text
-方法: positive_textをQwen3-Embedding-8Bでembed → ChromaDBで全488疾患と
-     cosine距離で類似度検索 → 全疾患を類似度降順でソート
-出力: candidates[] — 各要素に {disease_name, similarity, category, urgency}
-
-★ ChromaDBに格納されている疾患embeddingは findings_description（平均18,512字）を
-  1本の4096次元ベクトルに圧縮したものである。
-  患者テキスト（数十〜数百字）のembeddingとの cosine類似度で検索される。
-```
-
-### Step 2: 並行処理（3タスク同時実行 — ThreadPoolExecutor）
-
-**2a. LLMフィルタ（判断）:**
-```
-入力: candidates上位20件 + 患者テキスト全文 + negative_findings[]
-方法: LLMが論理的矛盾を検出し疾患を除外
-  例: ANA陰性 → SLE除外、男性 → PID除外
-出力: (filtered_candidates[], exclusion_reasons[])
-```
-
-**2b. 検査結果更新（polarity + 反実仮想法）:**
-```
-入力: candidates + result_lines[] + positive_text
-方法:
-  1. LLMアノテーション（または基準範囲テーブル）で各結果行に方向語を付与
-  2. 極性判定: polarity = dot(result_emb, polarity_axis)
-     polarity_axis = normalize(abnormal_anchor_emb - normal_anchor_emb)
-  3. 異常結果 (polarity > 0):
-     sims = result_emb @ disease_embs → excess = max(0, sim[d] - mean)
-     similarity *= exp(+excess)  — 関連疾患を増幅
-  4. 正常結果 (polarity ≤ 0): 反実仮想法
-     定量検査: 「検査名 異常 上昇」「検査名 異常 低下」の双方向仮想結果をembed
-       similarity *= exp(-(excess_up + excess_down))  — 両方向の関連疾患を抑制
-     定性検査: 「検査名 異常」の単方向仮想
-       similarity *= exp(-excess)
-```
-
-**2c. 統合Novelty（1 LLMコール）:**
-```
-入力: 患者テキスト全文 + 検査マスタ全331件 + HPEマスタ全274件
-方法: LLMが3タスクを同時実行
-  1. 実施済み検査の特定 → novelty_tests[] (二値: 0 or 1)
-  2. 聴取済みHPE項目の特定 → novelty_hpe[] (二値: 0 or 1)
-  3. HPE所見の極性判定 → hpe_findings[] (item, polarity +1/-1)
-フォールバック: 個別LLMコール3回 → embeddingギャップ検出
-```
-
-### Step 3: HPE所見による疾患重み更新（★現在の問題点★）
-```python
-# 現在のコード（engine.py L2239-2269）:
-for f in hpe_findings:              # N件のHPE所見（例: 発熱, 腹痛, 頭痛なし...）
-    sims = sim_matrix_hpe[:, idx]    # この所見と全疾患の関連度
-    bg = mean(sims)                  # 全疾患平均（背景）
-    for each candidate:
-        excess = max(0, sims[d] - bg)
-        if excess > 0:
-            similarity *= exp(polarity * excess)  # 乗算（1所見ごとに1回）
-
-# 問題: N所見あればexp()がN回乗算される → 指数的発散
-# 例: N=28所見 → 一部疾患のsimilarityが0.58→0.88に急騰
-# → 重みが2-3疾患に集中 → Part Aの加重分散がゼロに崩壊
-
-# 検証済み改善案: delta/√N 方式
-# delta = Σ polarity_k * excess_k  （N所見分を合算）
-# similarity *= exp(delta / √N)     （1回だけ乗算）
-# テスト結果: 10ケース比較で√N方式が最適（分散3倍改善、発散防止）
-```
-
-### Step 4: ランキング（4つのPart）
-
-全Partで共通の重み計算:
-```python
-raw_sims = [candidate.similarity for each candidate]  # HPE更新済みの値
-sim_centered = max(0, raw_sims - mean(raw_sims))       # 平均以上のみ
-w = sim_centered * exp(cos_critical + cos_curable)      # 2C重み付け
-w = w / sum(w)                                           # 正規化
-```
-
-**Part A: 鑑別推奨（prior加重分散）**
-```
-Var_w[j] = Σ w_i × (sim_matrix[i][j] - μ_j)²
-μ_j = Σ w_i × sim_matrix[i][j]
-utility_j = Var_w[j] × novelty_j × invasive_discount_j
-
-意味: 候補疾患間で「バラつく」検査 = どちらかの疾患を肯定/否定できる = 鑑別に有用
-弱点: 候補群に均一に関連する検査（血培、CBC等）は分散が小さく沈む
-```
-
-**Part B: Critical Hit（致命疾患排除）**
-```
-critical_hit_j = max_i [ exp(cos_critical_i) × similarity_i × sim_matrix[i][j] ]
-utility_j = critical_hit_j × novelty_j × invasive_discount_j
-
-意味: 「見逃したら死ぬ疾患」を最も効率的に排除/確認できる検査
-max演算: 最も致命的な1疾患との命中度で決まる（分散ではなく最大値）
-```
-
-**Part C: 確認・同定推奨（クラスタ特異度）**
-```
-cluster_mu_j = Σ w_i × sim_matrix[i][j]   — 候補群の加重平均
-global_mu_j = mean(sim_matrix[:][j])        — 全488疾患の非加重平均
-confirm_j = cluster_mu_j - global_mu_j
-utility_j = confirm_j × novelty_j × invasive_discount_j
-
-意味: 候補群に「特異的に」関連する検査（背景ノイズを除去）
-CRP（汎用）はglobal_muも高い → 差分小 → 沈む
-血液培養（特異的）はcluster_mu >> global_mu → 浮上
-```
-
-**Part D: 問診・身体診察推奨（Part Aと同一数学）**
-```
-sim_matrix_hpe (488, 274) を使用
-utility_k = Var_w[k] × novelty_hpe_k
-侵襲性バランシングなし（問診・身体診察は非侵襲）
-```
-
-### 動的侵襲性バランシング（Part A/B/Cに適用）
-
-```python
-# 各検査の侵襲度（事前計算、quality_descriptionから）
-cos_invasive_j = cos(quality_desc_emb_j, invasive_anchor_emb)
-
-# 候補群の重症度
-expected_criticality = Σ w_i × cos_critical_i
-
-# ペナルティ
-penalty_j = max(0, cos_invasive_j - expected_criticality)
-utility *= exp(-penalty_j)
-
-# 意味: 候補群が軽症なのに侵襲的検査が上位に来るのを防ぐ
-# 重症群（expected_criticality高）ではペナルティ消失
-```
-
----
-
-## 4. 事前計算コンポーネント（engine.__init__で全て実行）
-
-### 4.1 2Cスコア（Critical / Curable）
-```
-critical_anchor: "未治療の場合、数時間以内にバイタルサイン急速悪化...心停止に至る"
-curable_anchor: "治療開始後、数時間から数日で検査値の正常化...症状消失"
-cos_critical_d = cos(disease_emb_d, critical_anchor_emb)
-cos_curable_d = cos(disease_emb_d, curable_anchor_emb)
-weight_d = exp(cos_critical_d + cos_curable_d)
-```
-
-### 4.2 sim_matrix（仮説embedding方式）
-```
-# 検査側: hypothesis_text をembed（平均49字）
-# 疾患側: ChromaDB格納済みembedding（findings_descriptionの18K字をembed済み）
-sim_matrix = disease_embs_normed @ hypothesis_embs_normed.T  # (488, 331)
-
-# 例: hypothesis_text = "血液培養で微生物が検出された。グラム陽性球菌..."（49字）
-#     disease_emb = E("60代以上の高齢者や糖尿病...悪寒戦慄...ショック..."）（18K字のemb）
-#     sim = cos(hypothesis_emb, disease_emb)
-```
-
-### 4.3 検査の質スコア（差分ベクトル射影）
-```
-good_anchor: "採血のみで実施可能...15分以内に結果判明...致命的疾患を検出..."
-bad_anchor: "全身麻酔下でカテーテル挿入...数日を要し..."
-quality_axis = normalize(good_emb - bad_emb)
-quality_score_j = dot(quality_desc_emb_j, quality_axis)
-
-用途: 現在は直接ランキングに使用していない（侵襲性スコアに統合）
-```
-
-### 4.4 極性軸（正常←→異常）
-```
-normal_anchor: "検査値は基準範囲内であり正常...陰性...検出されず"
-abnormal_anchor: "検査値は基準範囲を逸脱し異常...陽性...上昇...低下...検出"
-polarity_axis = normalize(abnormal_emb - normal_emb)
-
-用途: update_from_results で検査結果の方向判定
-polarity = dot(result_emb, polarity_axis)
-> 0 → 異常結果, ≤ 0 → 正常結果
-```
-
----
-
-## 5. データサンプル
-
-### 5.1 疾患サンプル
-
-#### 敗血症性ショック（urgency: 超緊急）
-```
-description_for_embedding (313字)（★使われていない）:
-60代以上の高齢者や糖尿病、悪性腫瘍、免疫抑制状態にある患者が、数日前からの発熱、
-悪寒戦慄、全身倦怠感を主訴に来院し、急激な意識レベルの低下や呼吸困難を呈する
-臨床像が典型的である。来院時、収縮期血圧90mmHg未満の低血圧、頻脈、頻呼吸を認め、
-十分な輸液負荷（30mL/kg以上）を行っても平均血圧65mmHg以上を維持できず、
-循環作動薬を必要とする状態に陥る。（略）血清乳酸値の上昇（>2mmol/L）を認め...
-```
-
-```
-findings_description (18K字前後)（★これがChromaDBに格納されている）:
-※ LLM（Gemini）が生成した極めて詳細な臨床記述。症状、身体所見、検査所見、
-  鑑別ポイント、重症度評価を網羅。全文18,000字前後。
-  このテキスト全体が1本の4096次元ベクトルに圧縮されてChromaDBに格納される。
-```
-
-#### 前頭側頭型認知症（urgency: 通常）
-```
-description_for_embedding (231字):
-50代後半で発症。以前は温厚であったが、次第に万引きや信号無視などの社会的脱抑制行動が
-目立つようになり、家族の制止を聞かず、注意しても反省の態度が見られない。（略）
-人格変化と行動異常が主訴となる典型的な前頭側頭葉変性症の臨床像である。
-```
-
-### 5.2 検査サンプル
-
-#### 血液培養 (好気/嫌気)
-```
-hypothesis_text (49字):
-血液培養で微生物が検出された。グラム陽性球菌（ブドウ球菌、連鎖球菌、腸球菌）、
-グラム陰性桿菌（大腸菌、クレブシエラ、緑膿菌）、嫌気性菌、または真菌（カンジダ属）
-が分離培養された
-```
-
-sim_matrix計算: `cos(E(hypothesis_text), disease_emb)` で各疾患との関連度を計算。
-検査のfindings_description（11K字）はsim_matrix計算には使用されない。
-
-### 5.3 HPEサンプル
+### 3.1 レコード構造
 
 ```json
-{"item_name": "発熱", "hypothesis": "発熱 熱発 体温上昇 微熱 高熱", ...}
-{"item_name": "Murphy徴候", "hypothesis": "Murphy徴候 右季肋部圧痛 吸気停止 胆嚢炎", ...}
-{"item_name": "咳嗽", "hypothesis": "咳嗽 咳 乾性咳嗽 湿性咳嗽 遷延性 3週間以上", ...}
+{
+  "test_name": "CRP",
+  "category": "血液検査（生化学・一般）",
+  "description_for_embedding": "（手技的説明、~291字、現在未使用）",
+  "turnaround_minutes": 30,
+  "sample_type": "採血",
+  "contraindications": [],
+  "notes": "（臨床的意義の短い説明）",
+  "findings_description": "（全疾患横断の検査所見記述、平均11,483字、6セクション構成）",
+  "quality_description": "（検査の質・安全性・コスト記述、侵襲性スコア計算に使用）",
+  "hypothesis_text": "（1行の仮説文、平均48字、★sim_matrixの唯一の入力★）"
+}
 ```
 
-時間軸項目:
+### 3.2 統計
+
+| 項目 | 値 |
+|---|---|
+| 総検査数 | 344件 |
+| findings_description有り | 335件 (97.4%) |
+| findings_description無し | 9件 (D-dimer, 補体, クームス試験, 末梢血塗抹, KL-6, 尿中薬物スクリーニング, ハプトグロビン, ガラクトマンナン抗原, プレセプシン) |
+| fd_*セクション分離 | **0件（未実施、疾患は完了済み）** |
+| hypothesis_text有り | 344件 (100%) |
+| quality_description有り | 335件 |
+| findings_description文字数 | min 5,009 / max 19,654 / mean 11,483 / median 11,715 |
+| hypothesis_text文字数 | min 22 / max 112 / mean 48 |
+
+### 3.3 カテゴリ体系（29種類、統一性に問題あり）
+
 ```
-突然発症（数秒）: "突然発症 数秒で最大に達する 雷鳴様"
-急性発症（分〜時間）: "急性発症 分から時間単位で進行 増悪"
-亜急性発症（日〜週）: "亜急性発症 日から週単位で徐々に進行"
-緩徐発症（週〜月）: "緩徐発症 週から月単位で緩やかに進行"
+血液検査（生化学・一般）:        48件
+血液検査（内分泌・ホルモン）:     31件
+血液検査（免疫・血清・感染症）:   29件
+血液検査（自己抗体・アレルギー）: 22件
+尿・便・穿刺液検査:              20件
+侵襲的・カテーテル・生検:        16件
+血液検査（腫瘍マーカー）:        15件
+微生物学的検査（同定・遺伝子）:  15件
+画像検査（超音波）:              14件
+画像検査（CT）:                  13件
+画像検査（X線・造影）:           12件
+画像検査（MRI）:                 12件
+生理機能検査（神経・筋・その他）: 11件
+画像検査（核医学）:              11件
+専門科検査（眼科）:              11件
+生理機能検査（循環・呼吸）:      10件
+内視鏡検査:                       9件
+専門科検査（耳鼻咽喉科）:        8件
+血液検査（凝固・線溶）:           7件
+遺伝子・染色体検査:               7件
+専門科検査（産婦人科・泌尿器科）: 7件
+専門科検査（皮膚・アレルギー）:   6件
+血液検査・免疫:        3件  ← 表記揺れ
+血液検査・感染症:      2件  ← 表記揺れ
+穿刺・採取検査:        1件  ← 表記揺れ
+血液検査:              1件  ← 表記揺れ
+尿検査:                1件  ← 表記揺れ
+血液検査・生化学:      1件  ← 表記揺れ
+血液検査・凝固:        1件  ← 表記揺れ
 ```
+
+### 3.4 hypothesis_text のサンプル
+
+これがsim_matrix計算の**唯一の入力**（平均48字）:
+
+```
+"血清CK上昇を認めた。横紋筋融解、心筋障害、筋炎、甲状腺ホルモン欠乏による筋酵素逸脱を示唆する"
+
+"CRP上昇を認めた。急性炎症、感染症、自己免疫疾患、悪性腫瘍、組織破壊を示唆する"
+
+"血液培養で微生物が検出された。グラム陽性球菌（ブドウ球菌、連鎖球菌、腸球菌）、グラム陰性桿菌（大腸菌、クレブシエラ、緑膿菌）、嫌気性菌、または真菌（カンジダ属）が分離培養された"
+
+"胸部X線検査で異常陰影を認めた。肺炎、胸水、気胸、肺腫瘤、心拡大を示唆する"
+```
+
+### 3.5 findings_descriptionの6セクション構成
+
+generate.pyのTEST_SECTION_PROMPTSで生成:
+
+| # | セクション | 内容 |
+|---|---|---|
+| T1 | 適応臨床像 | どんな主訴・バイタル・身体所見で検査を想起するか |
+| T2 | 疾患別異常パターン（主要群） | 主要15-20疾患の具体的異常パターン・数値・特異度 |
+| T3 | 疾患別異常パターン（追加群） | 稀少・重篤・小児・代謝・薬剤性の追加疾患群 |
+| T4 | 鑑別パターン | 重症度別・時間経過別・他検査組合せ別の鑑別論理 |
+| T5 | 偽陽性・偽陰性・限界 | 薬剤・生理的変動・検体前処理・paradox・単独検査の限界 |
+| T6 | 緊急値・時間軸・モニタリング | panic value、発症-異常値の時間差、ピーク、正常化、治療反応 |
+
+**注意**: これら11,483字の記述はsim_matrixには使われていない。hypothesis_text（48字）のみが使用される。
 
 ---
 
-## 6. 判明している課題と検証結果
+## 4. sim_matrixの構成方法（★核心的課題★）
 
-### 6.1 ★致命的★ HPE更新の乗算による分散崩壊
+```python
+# 検査側: hypothesis_text をembed（平均48字）
+hypothesis_embs = embed([t["hypothesis_text"] for t in tests])  # (335, 4096)
 
-**症状:** 陰性所見が多い症例（N≥12）でPart Aの全検査がutility=0.00に崩壊。
+# 疾患側: ChromaDB格納済みembedding（findings_descriptionの6ドメイン max-pooling）
+disease_embs = normalized_disease_embeddings  # (522, 4096)
 
-**根本原因:** `update_from_hpe()` が各HPE所見ごとに `similarity *= exp(polarity * excess)` を
-N回乗算する。N=28所見で上位2-3疾患のsimilarityが指数的に増大 → 重みが極度に集中 →
-加重分散がゼロに収束。LLMの非決定性で小さな出力差が指数的に増幅され、
-同じ入力でも結果が不安定。
-
-**検証済み解決策:** delta/√N方式。10テストケースで3方式を比較:
-- 方式A（現行・乗算式）: 平均分散0.0059, 平均top1重み0.493
-- 方式B（delta/N）: 平均分散0.0207, 平均top1重み0.431（保守的すぎ）
-- **方式C（delta/√N）: 平均分散0.0171, 平均top1重み0.458（最適バランス）**
-
-### 6.2 ★重要★ 血液培養がランキングに入らない
-
-**症状:** ショック状態の敗血症疑い症例で、血液培養がPart A/B/CいずれのTop10にも入らない。
-
-**原因（Part Aの構造的限界）:**
-血液培養は敗血症関連疾患で「均一に高い」sim値を持つ → 分散が小さい →
-「全候補に共通して必要な検査」を推薦する仕組みが欠けている。
-
-**注意:** 前回のレビューで「291字のサマリーに起炎菌の記述がないから」と分析されたが、
-これは誤りである。ChromaDBには18K字のfindings_descriptionが格納されており、
-そこには血液培養に関する詳細な記述が含まれている。問題はテキストの解像度ではなく、
-Part Aの分散ベースの数学が「鑑別に有用な検査」のみを選び、
-「候補群に共通して必須の検査」を構造的に見つけられないことにある。
-
-**対応案:** Part E（cluster_mu）を新設。
+# sim_matrix = cos類似度
+sim_matrix = disease_embs @ hypothesis_embs.T  # (522, 335)
 ```
-utility_e_j = cluster_mu_j × novelty_j
-cluster_mu_j = Σ w_i × sim_matrix[i][j]  — 候補群の加重平均
-```
-全候補に「共通して関連する」検査が上位に来る。Part Cの confirm_score（cluster_mu - global_mu）
-とは異なり、global_muを引かない。Part Cは「特異性」、Part Eは「共通必要度」。
 
-### 6.3 HPE時間粒度の不足
+**情報の非対称性**:
+- 疾患側: findings_description（平均18,000字、6ドメインmax-pooling） → 4096次元
+- 検査側: hypothesis_text（平均48字、1行テキスト） → 4096次元
 
-「咳嗽」は1項目のみ。急性咳嗽 vs 慢性咳嗽の区別がHPE levelでは不可能。
-発症様式（突然/急性/亜急性/緩徐）の4項目はあるが、症状×時間のクロスバリアントはない。
-
-### 6.4 疾患カバレッジの穴
-
-以下のコモンディジーズが diseases.jsonl に未登録:
-- 咳喘息、後鼻漏/上気道咳嗽症候群(UACS)、好酸球性気管支炎
-- 急性気管支炎、感冒/急性上気道炎
-- ACE阻害薬誘発性咳嗽
-- GERD関連咳嗽
-
-### 6.5 18K字→1ベクトル圧縮の情報損失（未検証）
-
-findings_description（平均18,512字）を1本の4096次元ベクトルに圧縮している。
-この圧縮で重要な臨床情報（特異的な身体所見、マイナーな検査所見等）が
-ベクトル空間上で希釈されている可能性がある。
-Semantic Chunking（疫学/身体所見/検査所見でチャンク分割→max-pooling）は
-検討課題だが、現時点では未検証。
+この48字が4つの検査ランキング関数全ての基盤。
 
 ---
 
-## 7. 哲学と設計原則
+## 5. 検査ランキングの4つの軸
 
-- **「知覚はembedding、判断はLLM」**: embeddingは類似性の天才だが論理の盲目。
-  否定・矛盾・文脈依存の判断はLLMに委譲する。
-- **ハイパーパラメータなし**: 閾値、重み係数、チューニングパラメータを排除。
-  全てをembedding空間の幾何学とLLMの推論に委ねる。
-- **自然言語的統一**: 全層が自然言語で通信。数値化・離散化を最小限に。
-- **所見即所得**: テキストに書かれた概念のみがベクトル空間に存在する。
-  天井 = LLM記述の質 × LLM推論の質。
+### Part A: 分散ベース（鑑別）
+```
+utility = variance × novelty × invasive_discount
+variance = Σ w_i × (sim_matrix[i][j] - μ_j)²
+```
+候補疾患間で「バラつく」検査 = 鑑別に有用。
+例: SLEと感染症が候補 → ANA検査は高分散（SLEに高類似、感染症に低類似）
+
+### Part B: Critical Hit（致死的疾患除外）
+```
+utility = critical_hit × novelty × invasive_discount
+critical_hit = max_i [ exp(cos_critical_i) × similarity_i × sim_matrix[i][j] ]
+```
+「見逃したら死ぬ疾患」を効率的に排除/確認できる検査。max演算。
+
+### Part C: 特異度（確認）
+```
+utility = (cluster_μ - global_μ) × novelty × invasive_discount
+```
+候補疾患群に特異的な検査。CRP等の汎用検査はglobal_μが高いため沈む。
+
+### Part E: 共通必要度（基本）
+```
+utility = cluster_μ × novelty × invasive_discount
+```
+候補疾患群に共通して必要な検査。Part Cと違いglobal_μを引かない。ルーチン検査が上位に。
+
+### 共通要素
+- **novelty**: LLM二値判定（実施済み=0, 未実施=1）
+- **invasive_discount**: `exp(-max(0, cos_invasive - expected_criticality))` — 動的侵襲ペナルティ
+- **w（疾患重み）**: `exp(cos_critical + cos_curable)` — 2C重み付け
 
 ---
 
-## 8. 議論したい問い
+## 6. 検査結果処理（update_from_results）
 
-1. 18K字を1ベクトルに圧縮する現方式で、Qwen3-Embedding-8Bの表現力は足りているか？
-   Semantic Chunkingの優先度はどの程度か？
-2. Part E (cluster_mu) で血液培養問題は本当に解決するか？
-   cluster_muとconfirm_score (cluster_mu - global_mu) の使い分けは正しいか？
-3. HPEの症状×時間クロスバリアント（咳嗽(急性) / 咳嗽(慢性)）は追加すべきか？
-   追加する場合、LLMの抽出精度は維持できるか？
-4. コモンディジーズ（感冒、急性気管支炎等）の欠落はランキング精度にどう影響するか？
-   「低重心の防波堤」としてbase-rate neglectを防ぐ効果はあるか？
+検査結果入力時の処理:
+
+1. **LLMアノテーション**: 「CRP 15」→「CRP 15 mg/dL、著明な炎症反応上昇」に変換
+2. **極性判定**: embedding × 極性軸 → 異常/正常を自動判定
+3. **異常値**: 疾患embeddingとの直接cos類似度で候補疾患を増幅 `similarity *= exp(+excess)`
+4. **正常値（反実仮想法）**: 「もしこの疾患ならこの検査は異常のはず」→ 正常なので抑制 `similarity *= exp(-excess)`
+
+---
+
+## 7. 実症例テスト結果（暫定）
+
+47歳女性、来院1日前から左脇〜背中の痛み、全身痛、嘔吐、水様便、39度発熱。
+
+### 候補疾患（良好）
+- embedding検索は臨床的に妥当な候補を返す
+- LLMフィルタの過剰除外問題を修正済み（リスク因子1つの否定で除外しない等）
+
+### 検査推奨（改善余地あり）
+- 詳細は臨床テスト進行中
+- 感覚的に「なぜこの検査がこの順位なのか」の違和感がある場面あり
+- 根本的にはhypothesis_text（48字）の情報量とsim_matrixの精度の問題と推測
+
+---
+
+## 8. 認識している課題まとめ
+
+| # | 課題 | 深刻度 |
+|---|---|---|
+| 1 | hypothesis_text（48字）の情報量不足 → sim_matrix精度の天井 | ★★★ |
+| 2 | 検査findings_description（11,483字）がsim_matrixに未活用 | ★★★ |
+| 3 | 9件の重要検査がfindings_description未生成 | ★★ |
+| 4 | カテゴリの表記揺れ（29種中6件以上） | ★ |
+| 5 | fd_*セクション分離が未実施（検査側） | ★★ |
+| 6 | hypothesis_textの方向性問題（上昇/低下が1行に収まらない） | ★★ |
+| 7 | 344件の検査リストに重要な欠落がある可能性 | 不明 |
+
+---
+
+## 9. レビュアーへの質問
+
+1. **hypothesis_textの設計**: 現在1行48字。この情報量でsim_matrix精度は十分か？リッチにすべきならどういう構造が良いか？
+
+2. **sim_matrixの構成方法**: 疾患embedding × 検査hypothesis embeddingのcos類似度という方法は最適か？ 検査のfindings_description（11,483字）を活用する方法はあるか？
+
+3. **4軸ランキングの設計**: 分散(A)、Critical Hit(B)、特異度(C)、共通必要度(E)の4軸は妥当か？不足・不要な軸はあるか？
+
+4. **カテゴリ体系**: 表記揺れの修正以外に、カテゴリ情報をランキングに活用すべきか？
+
+5. **検査マスタの網羅性**: 344件で十分か？重要な欠落はあるか？
+
+6. **VeSMedの哲学（天井 = LLM記述の質 × LLM推論の質）を前提に**、検査推奨システム全体の改善方針として最も効果的なアプローチは何か？
