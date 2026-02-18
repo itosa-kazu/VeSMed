@@ -54,6 +54,157 @@ HPE_ALL_CHOICES = HPE_HX_CHOICES + HPE_PE_CHOICES
 
 
 # ----------------------------------------------------------------
+# データ管理ヘルパー
+# ----------------------------------------------------------------
+
+def _load_all_names(jsonl_path, key):
+    """JSONL から名前一覧を読み込む"""
+    names = []
+    try:
+        with open(jsonl_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    names.append(_json.loads(line).get(key, ""))
+    except Exception:
+        pass
+    return names
+
+
+_DISEASES_PATH = os.path.join(os.path.dirname(__file__), "data", "diseases.jsonl")
+_TESTS_PATH = os.path.join(os.path.dirname(__file__), "data", "tests.jsonl")
+_HPE_PATH = os.path.join(os.path.dirname(__file__), "data", "hpe_items.jsonl")
+
+DISEASE_NAMES = _load_all_names(_DISEASES_PATH, "disease_name")
+TEST_NAMES = _load_all_names(_TESTS_PATH, "test_name")
+HPE_ITEM_NAMES = _load_all_names(_HPE_PATH, "item_name")
+
+# 疾患のセクションフィールド
+_FD_SECTIONS = [
+    "fd_background", "fd_typical", "fd_atypical",
+    "fd_physical", "fd_tests", "fd_differential", "fd_pathophysiology",
+]
+_FD_LABELS = {
+    "fd_background": "背景・疫学",
+    "fd_typical": "典型的所見",
+    "fd_atypical": "非典型的所見",
+    "fd_physical": "身体診察所見",
+    "fd_tests": "検査所見",
+    "fd_differential": "鑑別診断",
+    "fd_pathophysiology": "病態生理",
+}
+
+
+def _load_jsonl_record(path, key_field, key_value):
+    """JSONLから特定レコードを読み込む"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    rec = _json.loads(line)
+                    if rec.get(key_field) == key_value:
+                        return rec
+    except Exception:
+        pass
+    return {}
+
+
+def _save_jsonl_record(path, key_field, key_value, updates):
+    """JSONLの特定レコードを更新して書き戻す"""
+    lines = []
+    updated = False
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                rec = _json.loads(line)
+                if rec.get(key_field) == key_value:
+                    rec.update(updates)
+                    updated = True
+                lines.append(_json.dumps(rec, ensure_ascii=False))
+    if updated:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    return updated
+
+
+def _on_disease_select(disease_name):
+    """疾患選択時のコールバック"""
+    if not disease_name:
+        empty = [""] * (3 + len(_FD_SECTIONS))
+        return empty
+    rec = _load_jsonl_record(_DISEASES_PATH, "disease_name", disease_name)
+    meta = f"{rec.get('category', '')} / {rec.get('urgency', '')} / ICD-10: {rec.get('icd10', '')}"
+    fd = rec.get("findings_description", "")
+    dfe = rec.get("description_for_embedding", "")
+    sections = [rec.get(s, "") for s in _FD_SECTIONS]
+    return [meta, fd, dfe] + sections
+
+
+def _save_disease(disease_name, fd, dfe, *section_values):
+    """疾患テキスト保存"""
+    if not disease_name:
+        return "疾患を選択してください"
+    updates = {"findings_description": fd, "description_for_embedding": dfe}
+    for i, key in enumerate(_FD_SECTIONS):
+        if i < len(section_values):
+            updates[key] = section_values[i]
+    ok = _save_jsonl_record(_DISEASES_PATH, "disease_name", disease_name, updates)
+    if ok:
+        return f"{disease_name} を保存しました。embeddingへの反映はindex.py再実行が必要です。"
+    return "保存失敗: 該当疾患が見つかりません"
+
+
+def _on_test_select(test_name):
+    """検査選択時のコールバック"""
+    if not test_name:
+        return [""] * 5
+    rec = _load_jsonl_record(_TESTS_PATH, "test_name", test_name)
+    meta = f"{rec.get('category', '')} / {rec.get('sample_type', '')}"
+    fd = rec.get("findings_description", "")
+    hs = rec.get("hypothesis_screen", "")
+    qd = rec.get("quality_description", "")
+    ht = rec.get("hypothesis_text", "")
+    return [meta, fd, hs, qd, ht]
+
+
+def _save_test(test_name, fd, hs, qd, ht):
+    """検査テキスト保存"""
+    if not test_name:
+        return "検査を選択してください"
+    updates = {
+        "findings_description": fd,
+        "hypothesis_screen": hs,
+        "quality_description": qd,
+        "hypothesis_text": ht,
+    }
+    ok = _save_jsonl_record(_TESTS_PATH, "test_name", test_name, updates)
+    if ok:
+        return f"{test_name} を保存しました。embeddingへの反映はindex.py再実行が必要です。"
+    return "保存失敗: 該当検査が見つかりません"
+
+
+def _on_hpe_select(item_name):
+    """HPE項目選択時のコールバック"""
+    if not item_name:
+        return [""] * 4
+    rec = _load_jsonl_record(_HPE_PATH, "item_name", item_name)
+    meta = f"{rec.get('category', '')} / {rec.get('subcategory', '')}"
+    hypothesis = rec.get("hypothesis", "")
+    instruction = rec.get("instruction", "")
+    return [meta, hypothesis, instruction]
+
+
+def _save_hpe(item_name, hypothesis, instruction):
+    """HPE項目保存"""
+    if not item_name:
+        return "HPE項目を選択してください"
+    updates = {"hypothesis": hypothesis, "instruction": instruction}
+    ok = _save_jsonl_record(_HPE_PATH, "item_name", item_name, updates)
+    if ok:
+        return f"{item_name} を保存しました。sim_matrix_hpeの再構築が必要です。"
+    return "保存失敗: 該当HPE項目が見つかりません"
+
+
+# ----------------------------------------------------------------
 # ランキング再計算（共通ロジック）
 # ----------------------------------------------------------------
 
@@ -418,114 +569,196 @@ with gr.Blocks(
 
     session_state = gr.State(value=None)
 
-    gr.Markdown("""
-# VeSMed - ベクトル空間医学統一フレームワーク
-臨床情報を自由記述 → 症状と検査結果を自動分離 → ベクトル空間で疾患検索・検査推奨
-    """)
+    gr.Markdown("# VeSMed - ベクトル空間医学統一フレームワーク")
 
-    # ===== 入力 =====
-    with gr.Row():
-        with gr.Column(scale=3):
-            input_text = gr.Textbox(
-                label="臨床情報（症状・所見・検査結果を自由に記述）",
-                placeholder="例: 67歳男性。繰り返す発熱を主訴に来院。7週間前から38℃前後の発熱が出現。\n血液培養: 黄色ブドウ球菌陽性。γ-GTP正常。直接ビリルビン正常。",
-                lines=6,
+    with gr.Tabs():
+
+        # ============================================================
+        # タブ1: 臨床分析
+        # ============================================================
+        with gr.Tab("臨床分析"):
+
+            with gr.Row():
+                with gr.Column(scale=3):
+                    input_text = gr.Textbox(
+                        label="臨床情報（症状・所見・検査結果を自由に記述）",
+                        placeholder="例: 67歳男性。繰り返す発熱を主訴に来院。7週間前から38℃前後の発熱が出現。\n血液培養: 黄色ブドウ球菌陽性。γ-GTP正常。直接ビリルビン正常。",
+                        lines=6,
+                    )
+                    with gr.Row():
+                        analyze_btn = gr.Button("分析開始", variant="primary", scale=2)
+                        reset_btn = gr.Button("リセット", variant="secondary", scale=1)
+                with gr.Column(scale=1):
+                    status_text = gr.Textbox(label="ステータス", interactive=False, lines=2)
+
+            gr.Markdown("---")
+            gr.Markdown("### 問診・身体診察推奨")
+
+            with gr.Row():
+                with gr.Column(scale=1):
+                    hpe_hx_table = gr.Dataframe(
+                        label="問診推奨（分散ベース）",
+                        headers=["#", "項目", "分類", "効用", "分散", "新規", "手順", "関連疾患"],
+                        interactive=False,
+                    )
+                with gr.Column(scale=1):
+                    hpe_pe_table = gr.Dataframe(
+                        label="身体診察推奨（分散ベース）",
+                        headers=["#", "項目", "分類", "効用", "分散", "新規", "手順", "関連疾患"],
+                        interactive=False,
+                    )
+
+            with gr.Accordion("所見フィードバック（波動方式 — ベクトル演算のみで即時更新）", open=True):
+                with gr.Row():
+                    hpe_pos_dropdown = gr.Dropdown(
+                        choices=HPE_ALL_CHOICES, multiselect=True, label="陽性所見（あり）",
+                        info="問診・身体診察で陽性だった項目",
+                    )
+                    hpe_neg_dropdown = gr.Dropdown(
+                        choices=HPE_ALL_CHOICES, multiselect=True, label="陰性所見（なし）",
+                        info="問診・身体診察で陰性だった項目",
+                    )
+                hpe_update_btn = gr.Button("所見反映", variant="secondary")
+
+            gr.Markdown("---")
+
+            with gr.Row():
+                disease_table = gr.Dataframe(
+                    label="候補疾患（類似度順）",
+                    headers=["#", "疾患名", "類似度", "重み", "緊急度", "診療科"],
+                    interactive=False,
+                )
+
+            with gr.Row():
+                cluster_mu_table = gr.Dataframe(
+                    label="基本推奨（候補群の共通必要度）",
+                    headers=["#", "検査名", "効用", "共通度", "新規", "関連疾患"],
+                    interactive=False,
+                )
+            with gr.Row():
+                with gr.Column(scale=1):
+                    test_table = gr.Dataframe(
+                        label="鑑別推奨（分散ベース）",
+                        headers=["#", "検査名", "効用", "分散", "新規", "関連疾患"],
+                        interactive=False,
+                    )
+                with gr.Column(scale=1):
+                    critical_table = gr.Dataframe(
+                        label="Critical排除推奨（最大命中）",
+                        headers=["#", "検査名", "効用", "命中", "新規", "排除対象"],
+                        interactive=False,
+                    )
+            with gr.Row():
+                confirm_table = gr.Dataframe(
+                    label="確認・同定推奨（加重平均）",
+                    headers=["#", "検査名", "効用", "特異", "新規", "関連疾患"],
+                    interactive=False,
+                )
+
+            gr.Markdown("---")
+            with gr.Accordion("除外された疾患・抑制された検査", open=False):
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        excluded_table = gr.Dataframe(
+                            label="除外疾患（LLMフィルタによる論理矛盾）",
+                            headers=["疾患名", "除外理由"],
+                            interactive=False,
+                        )
+                    with gr.Column(scale=1):
+                        suppressed_table = gr.Dataframe(
+                            label="抑制検査（実施済みと判定）",
+                            headers=["検査名", "理由"],
+                            interactive=False,
+                        )
+
+        # ============================================================
+        # タブ2: データ管理
+        # ============================================================
+        with gr.Tab("データ管理"):
+
+            # ----- 疾患テキスト -----
+            gr.Markdown("## 疾患テキスト")
+            with gr.Row():
+                dm_disease_dd = gr.Dropdown(
+                    choices=DISEASE_NAMES, label="疾患選択",
+                    allow_custom_value=False,
+                )
+                dm_disease_meta = gr.Textbox(label="メタ情報", interactive=False)
+
+            dm_disease_fd = gr.Textbox(
+                label="findings_description（embedding対象）",
+                lines=20, max_lines=40,
+            )
+            with gr.Accordion("セクション別テキスト", open=False):
+                dm_fd_sections = {}
+                for key in _FD_SECTIONS:
+                    dm_fd_sections[key] = gr.Textbox(
+                        label=_FD_LABELS[key], lines=8, max_lines=20,
+                    )
+            dm_disease_dfe = gr.Textbox(
+                label="description_for_embedding（短縮版、未使用）",
+                lines=3,
             )
             with gr.Row():
-                analyze_btn = gr.Button("分析開始", variant="primary", scale=2)
-                reset_btn = gr.Button("リセット", variant="secondary", scale=1)
-        with gr.Column(scale=1):
-            status_text = gr.Textbox(label="ステータス", interactive=False, lines=2)
+                dm_disease_save_btn = gr.Button("疾患テキスト保存", variant="primary")
+                dm_disease_status = gr.Textbox(label="", interactive=False, scale=3)
 
-    gr.Markdown("---")
+            gr.Markdown("---")
 
-    # ===== Part D: 問診・身体診察（最上部） =====
-    gr.Markdown("### 問診・身体診察推奨")
-
-    with gr.Row():
-        with gr.Column(scale=1):
-            hpe_hx_table = gr.Dataframe(
-                label="問診推奨（分散ベース）",
-                headers=["#", "項目", "分類", "効用", "分散", "新規", "手順", "関連疾患"],
-                interactive=False,
-            )
-        with gr.Column(scale=1):
-            hpe_pe_table = gr.Dataframe(
-                label="身体診察推奨（分散ベース）",
-                headers=["#", "項目", "分類", "効用", "分散", "新規", "手順", "関連疾患"],
-                interactive=False,
-            )
-
-    # ===== HPE所見フィードバック =====
-    with gr.Accordion("所見フィードバック（LLM不要 — 行列演算のみで即時更新）", open=True):
-        with gr.Row():
-            hpe_pos_dropdown = gr.Dropdown(
-                choices=HPE_ALL_CHOICES, multiselect=True, label="陽性所見（あり）",
-                info="問診・身体診察で陽性だった項目",
-            )
-            hpe_neg_dropdown = gr.Dropdown(
-                choices=HPE_ALL_CHOICES, multiselect=True, label="陰性所見（なし）",
-                info="問診・身体診察で陰性だった項目",
-            )
-        hpe_update_btn = gr.Button("所見反映", variant="secondary")
-
-    gr.Markdown("---")
-
-    # ===== 候補疾患 =====
-    with gr.Row():
-        disease_table = gr.Dataframe(
-            label="候補疾患（類似度順）",
-            headers=["#", "疾患名", "類似度", "重み", "緊急度", "診療科"],
-            interactive=False,
-        )
-
-    # ===== 検査推奨 =====
-    with gr.Row():
-        cluster_mu_table = gr.Dataframe(
-            label="基本推奨（候補群の共通必要度）",
-            headers=["#", "検査名", "効用", "共通度", "新規", "関連疾患"],
-            interactive=False,
-        )
-    with gr.Row():
-        with gr.Column(scale=1):
-            test_table = gr.Dataframe(
-                label="鑑別推奨（分散ベース）",
-                headers=["#", "検査名", "効用", "分散", "新規", "関連疾患"],
-                interactive=False,
-            )
-        with gr.Column(scale=1):
-            critical_table = gr.Dataframe(
-                label="Critical排除推奨（最大命中）",
-                headers=["#", "検査名", "効用", "命中", "新規", "排除対象"],
-                interactive=False,
-            )
-    with gr.Row():
-        confirm_table = gr.Dataframe(
-            label="確認・同定推奨（加重平均）",
-            headers=["#", "検査名", "効用", "特異", "新規", "関連疾患"],
-            interactive=False,
-        )
-
-    # ===== 除外・抑制情報 =====
-    gr.Markdown("---")
-    with gr.Accordion("除外された疾患・抑制された検査", open=False):
-        with gr.Row():
-            with gr.Column(scale=1):
-                excluded_table = gr.Dataframe(
-                    label="除外疾患（LLMフィルタによる論理矛盾）",
-                    headers=["疾患名", "除外理由"],
-                    interactive=False,
+            # ----- 検査テキスト -----
+            gr.Markdown("## 検査テキスト")
+            with gr.Row():
+                dm_test_dd = gr.Dropdown(
+                    choices=TEST_NAMES, label="検査選択",
+                    allow_custom_value=False,
                 )
-            with gr.Column(scale=1):
-                suppressed_table = gr.Dataframe(
-                    label="抑制検査（実施済みと判定）",
-                    headers=["検査名", "理由"],
-                    interactive=False,
+                dm_test_meta = gr.Textbox(label="メタ情報", interactive=False)
+
+            dm_test_fd = gr.Textbox(
+                label="findings_description（embedding対象）",
+                lines=15, max_lines=30,
+            )
+            dm_test_hs = gr.Textbox(
+                label="hypothesis_screen（スクリーニング仮説）",
+                lines=4,
+            )
+            dm_test_qd = gr.Textbox(
+                label="quality_description（品質記述）",
+                lines=5,
+            )
+            dm_test_ht = gr.Textbox(
+                label="hypothesis_text（仮説テキスト）",
+                lines=2,
+            )
+            with gr.Row():
+                dm_test_save_btn = gr.Button("検査テキスト保存", variant="primary")
+                dm_test_status = gr.Textbox(label="", interactive=False, scale=3)
+
+            gr.Markdown("---")
+
+            # ----- HPE項目 -----
+            gr.Markdown("## HPE項目（問診・身体診察）")
+            with gr.Row():
+                dm_hpe_dd = gr.Dropdown(
+                    choices=HPE_ITEM_NAMES, label="HPE項目選択",
+                    allow_custom_value=False,
                 )
+                dm_hpe_meta = gr.Textbox(label="メタ情報", interactive=False)
 
-    # ===== イベント =====
+            dm_hpe_hypothesis = gr.Textbox(
+                label="hypothesis（スクリーニング仮説 — embedding対象）",
+                lines=3,
+            )
+            dm_hpe_instruction = gr.Textbox(
+                label="instruction（聴取手順）",
+                lines=2,
+            )
+            with gr.Row():
+                dm_hpe_save_btn = gr.Button("HPE項目保存", variant="primary")
+                dm_hpe_status = gr.Textbox(label="", interactive=False, scale=3)
 
-    # 全出力 (13個): status + 9テーブル + state + 2ドロップダウン
+    # ===== イベント: 臨床分析タブ =====
+
     all_outputs = [
         status_text,
         disease_table, hpe_hx_table, hpe_pe_table,
@@ -554,6 +787,48 @@ with gr.Blocks(
     reset_btn.click(
         fn=reset_session,
         outputs=[input_text] + all_outputs,
+    )
+
+    # ===== イベント: データ管理タブ =====
+
+    dm_disease_outputs = [dm_disease_meta, dm_disease_fd, dm_disease_dfe] + \
+                         [dm_fd_sections[k] for k in _FD_SECTIONS]
+
+    dm_disease_dd.change(
+        fn=_on_disease_select,
+        inputs=[dm_disease_dd],
+        outputs=dm_disease_outputs,
+    )
+
+    dm_disease_save_btn.click(
+        fn=_save_disease,
+        inputs=[dm_disease_dd, dm_disease_fd, dm_disease_dfe] +
+               [dm_fd_sections[k] for k in _FD_SECTIONS],
+        outputs=[dm_disease_status],
+    )
+
+    dm_test_dd.change(
+        fn=_on_test_select,
+        inputs=[dm_test_dd],
+        outputs=[dm_test_meta, dm_test_fd, dm_test_hs, dm_test_qd, dm_test_ht],
+    )
+
+    dm_test_save_btn.click(
+        fn=_save_test,
+        inputs=[dm_test_dd, dm_test_fd, dm_test_hs, dm_test_qd, dm_test_ht],
+        outputs=[dm_test_status],
+    )
+
+    dm_hpe_dd.change(
+        fn=_on_hpe_select,
+        inputs=[dm_hpe_dd],
+        outputs=[dm_hpe_meta, dm_hpe_hypothesis, dm_hpe_instruction],
+    )
+
+    dm_hpe_save_btn.click(
+        fn=_save_hpe,
+        inputs=[dm_hpe_dd, dm_hpe_hypothesis, dm_hpe_instruction],
+        outputs=[dm_hpe_status],
     )
 
 
