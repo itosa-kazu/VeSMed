@@ -367,16 +367,14 @@ def update_hpe_feedback(pos_items, neg_items, state):
     """
     波動方式: クエリembedding ± HPE仮説embedding → 干渉delta → 即時更新。
     embedding API不要（ベクトル演算のみ）。
+
+    患者テキスト未入力（stateが空）でも動作:
+    HPE項目だけで純粋な波動クエリを構築し、疾患検索を実行。
+    LLMコール不要・Embedding APIコール不要 → 即時結果。
     """
     eng = init_engine()
 
-    if not state or "candidates_base" not in state:
-        return [gr.update()] * 10 + [state, pos_items, neg_items]
-
-    novelty_tests = np.array(state["novelty_tests"])
-    exclusion_reasons = state["exclusion_reasons"]
-
-    # HPE findings構築
+    # HPE findings構築（共通）
     hpe_findings = []
     novelty_hpe = np.ones(len(eng.hpe_names))
 
@@ -394,7 +392,76 @@ def update_hpe_feedback(pos_items, neg_items, state):
 
     n_pos = sum(1 for f in hpe_findings if f["polarity"] > 0)
     n_neg = sum(1 for f in hpe_findings if f["polarity"] < 0)
+
+    if not hpe_findings:
+        return [gr.update()] * 10 + [state, pos_items, neg_items]
+
+    # === 患者テキスト未入力: 純粋HPE波動検索 ===
+    if not state or "candidates_base" not in state:
+        print(f"[HPE直接検索] 陽性{n_pos}件 + 陰性{n_neg}件 → 純粋波動クエリ")
+
+        # HPE仮説embeddingだけで波動クエリを構築
+        wave_query = np.zeros(eng.hpe_hyp_embs.shape[1], dtype=np.float32)
+        for f in hpe_findings:
+            emb = eng.hpe_hyp_embs[f["index"]]
+            if f["polarity"] > 0:
+                wave_query = wave_query + emb
+            else:
+                wave_query = wave_query - emb
+
+        w_norm = np.linalg.norm(wave_query)
+        if w_norm > 0:
+            wave_query /= w_norm
+
+        # 全疾患との類似度
+        sims = wave_query @ eng.disease_embs_normed.T
+
+        # disease_idx逆引き
+        idx_to_name = [""] * len(eng.disease_idx)
+        for dname, didx in eng.disease_idx.items():
+            idx_to_name[didx] = dname
+
+        candidates = []
+        for i, sim in enumerate(sims):
+            dname = idx_to_name[i]
+            if not dname:
+                continue
+            meta = eng.disease_db.get(dname, {})
+            candidates.append({
+                "disease_name": dname,
+                "similarity": float(sim),
+                "category": meta.get("category", ""),
+                "urgency": meta.get("urgency", ""),
+                "clinical_weight": eng.disease_2c.get(dname, {}).get("weight", 1.0),
+            })
+
+        candidates.sort(key=lambda c: c["similarity"], reverse=True)
+        novelty_tests = np.ones(len(eng.test_names))
+
+        tables = _rerank(eng, candidates, novelty_tests, novelty_hpe, [])
+        status = f"HPE直接検索 / 陽性{n_pos}件 + 陰性{n_neg}件（LLM不要・即時）"
+
+        # stateを構築（後続のHPEフィードバック用）
+        state = {
+            "candidates_base": candidates,
+            "novelty_tests": novelty_tests.tolist(),
+            "exclusion_reasons": [],
+        }
+
+        return (
+            status,
+            tables[0], tables[1], tables[2], tables[3],
+            tables[4], tables[5], tables[6], tables[7], tables[8],
+            state,
+            pos_items,
+            neg_items,
+        )
+
+    # === 患者テキストあり: 従来の波動フィードバック ===
     print(f"[HPEフィードバック] 陽性{n_pos}件 + 陰性{n_neg}件（波動方式）")
+
+    novelty_tests = np.array(state["novelty_tests"])
+    exclusion_reasons = state["exclusion_reasons"]
 
     # 元のクエリembeddingを復元（波動方式の基底ベクトル）
     query_emb = state.get("query_embedding")
