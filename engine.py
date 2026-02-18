@@ -1203,42 +1203,49 @@ class VeSMedEngine:
     # ----------------------------------------------------------------
     def split_symptoms_results(self, text: str) -> tuple:
         """
-        自由記述テキストを「陽性症状」「陰性所見」「検査結果」に自動分離。
+        自由記述テキストを「主訴・現病歴」「既往歴・背景」「陰性所見」「検査結果」に4分類。
 
-        陽性所見 → embedding検索（search_diseases）に渡す
+        主訴・現病歴 → embedding検索（search_diseases）に渡す（知覚の入力）
+        既往歴・背景 → LLMフィルタに渡す（判断の材料、embeddingには入れない）
         陰性所見 → filter_contradictions に直接渡す（embeddingは否定を区別できない）
         検査結果 → update_from_results に渡す
 
-        Returns: (positive_text: str, negative_findings: list[str], result_lines: list[str])
+        Returns: (chief_complaint: str, negative_findings: list[str],
+                  result_lines: list[str], background: str)
+                  ※後方互換: 4値展開で使用。旧3値展開コードはbackgroundを無視。
         """
         lines = [l.strip() for l in text.split('\n') if l.strip()]
         if not lines:
-            return "", [], []
+            return "", [], [], ""
 
         return self._split_with_llm(text, lines)
 
     def _split_with_llm(self, full_text: str, lines: list) -> tuple:
-        """LLMでテキストを陽性症状・陰性所見・検査結果に3分離"""
-        prompt = f"""以下の臨床テキストを3つのカテゴリに分離してください。
+        """LLMでテキストを主訴・既往歴・陰性所見・検査結果に4分類"""
+        prompt = f"""以下の臨床テキストを4つのカテゴリに分離してください。
 
 カテゴリ定義:
-1. positive_findings: 陽性の症状・所見（存在する所見）
-   - 主訴、現病歴、既往歴、バイタルサイン、陽性の身体所見
-   - 例: 「発熱38度」「頭痛あり」「心窩部圧痛」「体温37.5℃」
-2. negative_findings: 陰性の所見（否定された所見）
+1. chief_complaint: 主訴・現病歴（今回の受診理由となる症状・所見）
+   - 今回新たに出現した症状、現病歴の経過、バイタルサイン、陽性の身体所見
+   - 例: 「3日前からの発熱38度」「頭痛あり」「心窩部圧痛」「半年前から怒りっぽくなった」
+2. background: 既往歴・背景情報（以前から存在する状態、内服薬、基礎情報）
+   - 年齢・性別、既往歴、内服薬、家族歴、社会歴、アレルギー歴
+   - 例: 「高血圧症で内服加療中」「糖尿病の既往」「65歳男性」「喫煙20本/日×30年」
+3. negative_findings: 陰性の所見（否定された所見）
    - 「〜なし」「〜陰性」「〜認めず」「〜否定」「正常」等
    - 例: 「項部硬直なし」「Kernig徴候陰性」「Murphy徴候陰性」「発疹認めず」
-3. results: 検査結果（血液検査、画像検査、生理検査の数値・結果）
+4. results: 検査結果（血液検査、画像検査、生理検査の数値・結果）
    - 例: 「WBC 12000」「CRP 8.5」「胸部X線：浸潤影あり」
 
-ルール:
-- バイタルサインの数値（体温、血圧、脈拍、SpO2等）→ positive_findings
-- 判断に迷う場合はpositive_findingsに含める
-- negative_findingsは個別の所見を文字列リストで返す
+分類の判断基準（重要）:
+- 「〜で内服加療中」「〜の既往あり」「〜と診断されている」→ background
+- 今回の受診契機となった新しい変化 → chief_complaint
+- バイタルサインの数値（体温、血圧、脈拍、SpO2等）→ chief_complaint
+- 判断に迷う場合はchief_complaintに含める
 - 【重要】数値は必ず臨床的意味を自然言語で付与して出力せよ（例: 「BP 70/40」→「収縮期血圧70台の重篤なショック状態」、「RR 35」→「著明な頻呼吸」、「WBC 18000」→「白血球著増」、「SpO2 82%」→「重度の低酸素血症」）。元の数値も残すこと。
 
 出力形式（JSON）:
-{{"positive_findings": "陽性テキスト（改行区切り）", "negative_findings": ["陰性所見1", "陰性所見2", ...], "results": ["検査結果1", "検査結果2", ...]}}
+{{"chief_complaint": "主訴・現病歴テキスト（改行区切り）", "background": "既往歴・背景テキスト（改行区切り）", "negative_findings": ["陰性所見1", "陰性所見2", ...], "results": ["検査結果1", "検査結果2", ...]}}
 
 テキスト:
 {full_text}"""
@@ -1247,24 +1254,33 @@ class VeSMedEngine:
             content = self._llm_call([
                 {"role": "system", "content": "JSON出力のみ。説明不要。"},
                 {"role": "user", "content": prompt},
-            ])
+            ], temperature=0)  # 分類タスク: 決定的出力
             start = content.find("{")
             end = content.rfind("}") + 1
             if start >= 0 and end > start:
                 parsed = json.loads(content[start:end])
-                positive = parsed.get("positive_findings", parsed.get("symptoms", ""))
+                chief = parsed.get("chief_complaint", parsed.get("positive_findings", parsed.get("symptoms", "")))
+                background = parsed.get("background", "")
                 negatives = parsed.get("negative_findings", [])
                 results = parsed.get("results", [])
                 if isinstance(results, str):
                     results = [r.strip() for r in results.split('\n') if r.strip()]
                 if isinstance(negatives, str):
                     negatives = [n.strip() for n in negatives.split('\n') if n.strip()]
-                print(f"  [分離LLM] 陽性{len(positive)}字, 陰性{len(negatives)}件, 検査結果{len(results)}件")
-                return positive, negatives, results
+                if isinstance(background, list):
+                    background = '\n'.join(background)
+                # 安全策: 主訴が入力の10%未満なら分類失敗とみなし全テキストを主訴扱い
+                if len(chief.strip()) < len(full_text) * 0.1:
+                    print(f"  [分離LLM] 主訴が短すぎる({len(chief)}字/{len(full_text)}字) → 全テキストで検索")
+                    chief = full_text
+                    background = ""
+                print(f"  [分離LLM] 主訴{len(chief)}字, 既往歴{len(background)}字, 陰性{len(negatives)}件, 検査結果{len(results)}件")
+                return chief, negatives, results, background
         except Exception as e:
             print(f"  [分離LLM] 失敗、embedding分離にフォールバック: {e}")
 
-        return self._split_with_embedding(lines)
+        chief, negatives, results = self._split_with_embedding(lines)
+        return chief, negatives, results, ""
 
     def _split_with_embedding(self, lines: list) -> tuple:
         """Embeddingベースで検査結果行を検出（LLM不要、陰性分離なし）"""
@@ -1490,7 +1506,8 @@ class VeSMedEngine:
     # Step 3.5: LLM論理フィルタ（v2: 矛盾疾患を除外）
     # ----------------------------------------------------------------
     def filter_contradictions(self, candidates: list, patient_text: str,
-                             negative_findings: list = None) -> tuple:
+                             negative_findings: list = None,
+                             background: str = None) -> tuple:
         """
         v2哲学: 判断はLLM。
 
@@ -1505,12 +1522,15 @@ class VeSMedEngine:
         negative_findings: 陰性所見リスト（split_symptoms_resultsで分離された否定所見）。
         これにより「項部硬直なし」→ 髄膜炎除外 等がより確実に機能する。
 
+        background: 既往歴・背景情報（4分類splitで分離）。
+
         Returns: (filtered_candidates, exclusion_reasons)
           exclusion_reasons: [{"disease_name": str, "reason": str}, ...]
         """
-        # 上位20疾患をLLMに提示
-        top_n = min(20, len(candidates))
-        disease_list = [f"- {c['disease_name']}" for c in candidates[:top_n]]
+        # 類似度でソートしてから上位20疾患をLLMに提示
+        sorted_cands = sorted(candidates, key=lambda c: c.get("similarity", 0), reverse=True)
+        top_n = min(20, len(sorted_cands))
+        disease_list = [f"- {c['disease_name']}" for c in sorted_cands[:top_n]]
 
         # 陰性所見セクション
         neg_section = ""
@@ -1521,6 +1541,14 @@ class VeSMedEngine:
 {neg_list}
 上記の陰性所見が疾患の「診断に必須な所見」を否定している場合のみ除外対象。
 リスク因子の否定や、非典型例で欠如しうる所見の否定では除外しないこと。
+"""
+
+        # 既往歴・背景セクション
+        bg_section = ""
+        if background:
+            bg_section = f"""
+【既往歴・背景情報】
+{background}
 """
 
         prompt = f"""以下の患者テキストと候補疾患リストを見て、
@@ -1547,7 +1575,7 @@ class VeSMedEngine:
 
 患者テキスト:
 {patient_text}
-{neg_section}
+{bg_section}{neg_section}
 候補疾患:
 {chr(10).join(disease_list)}
 
@@ -2236,19 +2264,35 @@ class VeSMedEngine:
         )
         print(f"[HPE NameEmb] {self.hpe_name_embs.shape[0]}件計算・キャッシュ完了")
 
-    def compute_all_novelty(self, patient_text: str) -> tuple:
+    def compute_all_novelty(self, patient_text: str, novelty_text: str = None) -> tuple:
         """
         統合LLMコール: 検査novelty + HPE novelty + HPE所見抽出を1回で実行。
         3つの個別LLMコールを1つに統合し、APIコスト・レイテンシを削減。
+
+        patient_text: HPE検出用テキスト（主訴・現病歴のみ推奨）
+        novelty_text: 検査novelty判定用テキスト（全文推奨、省略時はpatient_text）
 
         Returns: (novelty_tests: ndarray, novelty_hpe: ndarray, hpe_findings: list)
         """
         n_tests = len(self.test_names)
         n_hpe = len(self.hpe_names)
+        if novelty_text is None:
+            novelty_text = patient_text
 
         # LLM統合プロンプト
         test_list_json = json.dumps(self.test_names, ensure_ascii=False)
         hpe_list_json = json.dumps(self.hpe_names, ensure_ascii=False)
+
+        # 2テキストが異なる場合、セクションを分離して提示
+        if novelty_text != patient_text:
+            text_section = f"""【臨床テキスト（主訴・現病歴）— タスク2・3はこのテキストのみ使用】
+{patient_text}
+
+【臨床テキスト（全文）— タスク1はこのテキストを使用】
+{novelty_text}"""
+        else:
+            text_section = f"""【臨床テキスト】
+{patient_text}"""
 
         prompt = f"""以下の臨床テキストを読み、3つのタスクを同時に実行してください。
 
@@ -2266,7 +2310,7 @@ class VeSMedEngine:
 - 「発熱39度」はバイタルサイン測定の根拠にはなるが、心電図・血液検査・画像検査の根拠にはならない
 - 迷ったら「未実施」とする（偽陰性より偽陽性の害が大きい）
 
-【タスク2: 聴取済みHPE項目の特定】
+【タスク2: 聴取済みHPE項目の特定】— 主訴・現病歴テキストのみ使用
 すでに聴取済み・確認済みの問診項目・身体診察所見を特定。
 - 文字列の一致ではなく「医学的な論理包含」でマッピング
 - 患者が自発的に述べた症状も「聴取済み」に含める
@@ -2276,8 +2320,9 @@ class VeSMedEngine:
   例: 「タバコ吸わない」→「現在喫煙」は聴取済み（陰性所見）
   例: 「2日前から腹痛」→「腹痛（急性）」は聴取済み
 - 出力は必ずHPEマスタに存在する正確な名称のみ
+- 【重要】既往歴・背景情報（「〜で内服加療中」等）は対象外。今回の受診契機となった症状・所見のみ対象。
 
-【タスク3: HPE所見の極性判定】
+【タスク3: HPE所見の極性判定】— 主訴・現病歴テキストのみ使用
 タスク2で特定した項目について、陽性(+1)か陰性(-1)かを判定。
 - 「発熱」「腹痛あり」→ +1
 - 「肝疾患なし」「Murphy徴候陰性」→ -1
@@ -2290,8 +2335,7 @@ class VeSMedEngine:
   例: 「2日前からの下痢」→「下痢（急性：2週未満）」
   例: 「咳が出る」（期間不明）→ どちらも選択しない
 
-【臨床テキスト】
-{patient_text}
+{text_section}
 
 【検査マスタ（全{n_tests}件）】
 {test_list_json}
@@ -2345,8 +2389,8 @@ class VeSMedEngine:
         except Exception as e:
             print(f"  [統合Novelty] 失敗、個別コールにフォールバック: {e}")
 
-        # フォールバック: 個別コール
-        novelty_tests = self.compute_novelty(patient_text)
+        # フォールバック: 個別コール（検査noveltyは全文、HPEは主訴のみ）
+        novelty_tests = self.compute_novelty(novelty_text)
         novelty_hpe = self.compute_novelty_hpe(patient_text)
         hpe_findings = self.extract_hpe_findings(patient_text)
         return novelty_tests, novelty_hpe, hpe_findings

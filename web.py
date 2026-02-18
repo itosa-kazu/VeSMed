@@ -251,16 +251,16 @@ def analyze_patient(input_text, state):
 
     t0 = _time.time()
 
-    # Step 0: 症状と検査結果を自動分離（LLM、3分類）
-    positive_text, negative_findings, result_lines = eng.split_symptoms_results(input_text)
+    # Step 0: 症状と検査結果を自動分離（LLM、4分類）
+    chief_text, negative_findings, result_lines, background = eng.split_symptoms_results(input_text)
     t_split = _time.time()
     print(f"[TIMING] split: {t_split-t0:.1f}s")
 
-    if not positive_text.strip():
-        positive_text = input_text
+    if not chief_text.strip():
+        chief_text = input_text
 
-    # Step 1: 疾患検索（embedding — 知覚、陽性所見のみ）
-    candidates = eng.search_diseases(positive_text)
+    # Step 1: 疾患検索（embedding — 知覚、主訴・現病歴のみ）
+    candidates = eng.search_diseases(chief_text)
     t1 = _time.time()
     print(f"[TIMING] search_diseases: {t1-t_split:.1f}s")
 
@@ -273,12 +273,16 @@ def analyze_patient(input_text, state):
 
     with ThreadPoolExecutor(max_workers=3) as executor:
         fut_filter = executor.submit(
-            eng.filter_contradictions, candidates, full_text, negative_findings,
+            eng.filter_contradictions, candidates, full_text, negative_findings, background,
         )
         fut_update = executor.submit(
-            eng.update_from_results, cands_copy, result_lines, positive_text,
+            eng.update_from_results, cands_copy, result_lines, chief_text,
         ) if result_lines else None
-        fut_all_novelty = executor.submit(eng.compute_all_novelty, full_text)
+        # HPE検出は主訴のみ（既往歴のHPE項目がembedding検索を汚染するのを防ぐ）
+        # novelty判定（検査の実施有無）には全テキストが必要
+        novelty_text = full_text  # 検査noveltyは全文で判定
+        hpe_text = chief_text     # HPE検出は主訴のみ
+        fut_all_novelty = executor.submit(eng.compute_all_novelty, hpe_text, novelty_text)
 
         novelty, novelty_hpe, hpe_findings = fut_all_novelty.result()
         filtered_candidates, exclusion_reasons = fut_filter.result()
@@ -322,7 +326,8 @@ def analyze_patient(input_text, state):
         neg_info = f" / 陰性所見{len(negative_findings)}件（{neg_names}）"
     else:
         neg_info = ""
-    status = f"分析完了 / {len(candidates)}疾患{filter_info}{neg_info} / 検査結果{n_results}件"
+    bg_info = f" / 既往歴あり" if background else ""
+    status = f"分析完了 / {len(candidates)}疾患{filter_info}{neg_info}{bg_info} / 検査結果{n_results}件"
 
     # セッション状態保存
     auto_pos = [f["item"] for f in hpe_findings if f["polarity"] > 0]

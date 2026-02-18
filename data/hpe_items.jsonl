@@ -280,3 +280,19 @@
 {"item_name": "呼吸数測定", "category": "PE", "subcategory": "バイタルサイン", "hypothesis": "呼吸数 頻呼吸 徐呼吸 呼吸パターン Kussmaul呼吸 Cheyne-Stokes", "instruction": "患者に気づかれないよう1分間測定。パターン（Kussmaul/CS）を評価"}
 {"item_name": "SpO2測定", "category": "PE", "subcategory": "バイタルサイン", "hypothesis": "SpO2 酸素飽和度 低酸素血症 呼吸不全 パルスオキシメトリー", "instruction": "指先で測定。90%以下は呼吸不全。CO中毒では偽正常に注意"}
 {"item_name": "腱黄色腫", "category": "PE", "subcategory": "特殊徴候", "hypothesis": "腱黄色腫 アキレス腱肥厚 脂質沈着 遺伝性脂質代謝異常", "instruction": "アキレス腱の肥厚→FHを示唆"}
+{"item_name": "記憶障害", "category": "Hx", "subcategory": "ROS:精神", "hypothesis": "記憶障害 物忘れ 近時記憶低下 短期記憶障害 エピソード記憶障害 健忘 認知機能低下", "instruction": "最近の出来事を覚えているか？同じことを繰り返し聞くか？物の置き場所を忘れるか？"}
+{"item_name": "見当識障害", "category": "Hx", "subcategory": "ROS:精神", "hypothesis": "見当識障害 日時場所人物 時間的見当識 場所的見当識 人物誤認 迷子", "instruction": "今日の日付は？ここはどこ？自分の年齢は？周囲の人物を正しく認識できるか？"}
+{"item_name": "幻覚", "category": "Hx", "subcategory": "ROS:精神", "hypothesis": "幻覚 幻視 幻聴 幻嗅 レビー小体型認知症 統合失調症 せん妄 薬剤性", "instruction": "見えないものが見えることは？聞こえない声が聞こえることは？具体的な内容は？"}
+{"item_name": "妄想", "category": "Hx", "subcategory": "ROS:精神", "hypothesis": "妄想 被害妄想 物盗られ妄想 嫉妬妄想 誇大妄想 関係妄想 被注察妄想", "instruction": "誰かに狙われている？物を盗まれた？配偶者が浮気している？根拠のない確信は？"}
+{"item_name": "興奮・焦燥", "category": "Hx", "subcategory": "ROS:精神", "hypothesis": "興奮 焦燥 易刺激性 攻撃性 暴力 暴言 不穏 agitation", "instruction": "落ち着かない？イライラする？怒りの爆発は？物を壊す・暴力行為は？"}
+{"item_name": "抑うつ気分", "category": "Hx", "subcategory": "ROS:精神", "hypothesis": "抑うつ 気分の落ち込み 意欲低下 興味喪失 悲哀 絶望感 無力感 うつ病", "instruction": "気分が沈むことは？楽しめなくなった？やる気が出ない？以前楽しんでいた活動への興味は？"}
+{"item_name": "希死念慮", "category": "Hx", "subcategory": "ROS:精神", "hypothesis": "希死念慮 自殺念慮 自殺企図 自傷行為 死にたい 生きていたくない", "instruction": "死にたいと思うことは？自分を傷つけたいと思うことは？具体的な計画は？"}
+{"item_name": "感情鈍麻・アパシー", "category": "Hx", "subcategory": "ROS:精神", "hypothesis": "感情鈍麻 アパシー 無関心 自発性低下 発動性低下 感情の平板化 無気力 意欲低下", "instruction": "周囲への関心が薄くなった？何も気にならなくなった？自分から行動しなくなった？"}
+{"item_name": "常同行動", "category": "Hx", "subcategory": "ROS:精神", "hypothesis": "常同行動 反復行動 儀式的行動 こだわり 同じ時間に同じ行動 ルーティン固執 前頭側頭型認知症", "instruction": "同じ行動を繰り返す？決まった時間に決まったことをする？ルーティンの変更に対する反応は？"}
+{"item_name": "脱抑制", "category": "Hx", "subcategory": "ROS:精神", "hypothesis": "脱抑制 社会的逸脱行動 反社会的行動 衝動制御障害 万引き 性的逸脱 礼節欠如 前頭側頭型認知症", "instruction": "社会的に不適切な言動は？衝動的な行動は？以前はしなかったルール違反は？"}
+{"item_name": "食行動異常", "category": "Hx", "subcategory": "ROS:精神", "hypothesis": "食行動異常 過食 偏食 異食 甘いものへの嗜好変化 口唇傾向 食事へのこだわり 前頭側頭型認知症", "instruction": "食事の嗜好が変わった？同じものばかり食べる？甘いものを急に好むようになった？"}
+{"item_name": "性格変化・人格変化", "category": "Hx", "subcategory": "ROS:精神", "hypothesis": "性格変化 人格変化 易怒性 怒りっぽい 温厚だった人が攻撃的に 社交的だった人が引きこもりに 前頭葉機能障害", "instruction": "性格が変わった？以前と比べて怒りっぽくなった？周囲の人が性格の変化に気づいた？"}
+{"item_name": "病識欠如", "category": "Hx", "subcategory": "ROS:精神", "hypothesis": "病識欠如 アノソグノシア 自覚なし 病気を否認 受診拒否 前頭側頭型認知症 認知症", "instruction": "本人は異常を自覚しているか？受診を嫌がるか？「自分は問題ない」と言うか？"}
+{"item_name": "注意力低下", "category": "Hx", "subcategory": "ROS:精神", "hypothesis": "注意力低下 集中力低下 注意散漫 注意障害 せん妄 ADHD 認知機能低下", "instruction": "集中できない？気が散りやすくなった？テレビや会話に集中できない？"}
+{"item_name": "判断力低下", "category": "Hx", "subcategory": "ROS:精神", "hypothesis": "判断力低下 遂行機能障害 計画能力低下 意思決定困難 前頭葉機能障害 認知症", "instruction": "複雑な判断ができなくなった？金銭管理に支障？計画を立てて実行できるか？"}
+{"item_name": "共感性低下", "category": "Hx", "subcategory": "ROS:精神", "hypothesis": "共感性低下 他者への無関心 冷淡 思いやりの欠如 社会的認知障害 前頭側頭型認知症", "instruction": "他人の気持ちが分からなくなった？冷たくなった？家族の悲しみに無反応？"}
